@@ -1,0 +1,640 @@
+"""
+SQLite database module for YouTube video metadata management.
+
+Provides persistent storage for extracted video data with support for:
+- User comments and ratings
+- Custom tags for organization
+- Import tracking from HTML extractions
+"""
+
+import sqlite3
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass, asdict
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class VideoRecord:
+    """Database record for a video with user annotations."""
+    # Core video data (from extraction)
+    video_id: str
+    title: str
+    channel: Optional[str] = None
+    views: Optional[str] = None
+    views_count: Optional[int] = None
+    published: Optional[str] = None
+    published_date: Optional[str] = None
+    duration: Optional[str] = None
+    url: str = ""
+    video_type: str = "video"
+    thumbnail_url: Optional[str] = None
+    thumbnail_local: Optional[str] = None
+
+    # Live status
+    is_live: bool = False
+    is_premiere: bool = False
+    is_upcoming: bool = False
+    live_badge: Optional[str] = None
+
+    # User annotations
+    user_comment: Optional[str] = None
+    user_rating: Optional[int] = None  # 1-5 stars
+    user_tags: List[str] = None  # Stored as JSON in DB
+
+    # Metadata
+    source_file: Optional[str] = None
+    source_date: Optional[str] = None
+    first_seen: Optional[str] = None  # When first imported
+    last_updated: Optional[str] = None  # Last modification
+
+    # Database ID
+    id: Optional[int] = None
+
+    def __post_init__(self):
+        if self.user_tags is None:
+            self.user_tags = []
+        if not self.url and self.video_id:
+            if self.video_type == "short":
+                self.url = f"https://youtube.com/shorts/{self.video_id}"
+            else:
+                self.url = f"https://youtube.com/watch?v={self.video_id}"
+
+
+class VideoDatabase:
+    """SQLite database for video metadata storage."""
+
+    SCHEMA_VERSION = 1
+
+    def __init__(self, db_path: str | Path = "yt_videos.db"):
+        """
+        Initialize database connection.
+
+        Args:
+            db_path: Path to SQLite database file
+        """
+        self.db_path = Path(db_path)
+        self.conn: Optional[sqlite3.Connection] = None
+        self._connect()
+        self._init_schema()
+
+    def _connect(self):
+        """Establish database connection."""
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        # Enable foreign keys
+        self.conn.execute("PRAGMA foreign_keys = ON")
+
+    def _init_schema(self):
+        """Initialize database schema if not exists."""
+        cursor = self.conn.cursor()
+
+        # Videos table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS videos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_id TEXT UNIQUE NOT NULL,
+                title TEXT NOT NULL,
+                channel TEXT,
+                views TEXT,
+                views_count INTEGER,
+                published TEXT,
+                published_date TEXT,
+                duration TEXT,
+                url TEXT,
+                video_type TEXT DEFAULT 'video',
+                thumbnail_url TEXT,
+                thumbnail_local TEXT,
+                is_live INTEGER DEFAULT 0,
+                is_premiere INTEGER DEFAULT 0,
+                is_upcoming INTEGER DEFAULT 0,
+                live_badge TEXT,
+                user_comment TEXT,
+                user_rating INTEGER CHECK(user_rating IS NULL OR (user_rating >= 1 AND user_rating <= 5)),
+                source_file TEXT,
+                source_date TEXT,
+                first_seen TEXT NOT NULL,
+                last_updated TEXT NOT NULL
+            )
+        """)
+
+        # Tags table (many-to-many)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            )
+        """)
+
+        # Video-Tags junction table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS video_tags (
+                video_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                PRIMARY KEY (video_id, tag_id),
+                FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Import history table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS import_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                import_date TEXT NOT NULL,
+                video_count INTEGER,
+                source_type TEXT
+            )
+        """)
+
+        # Create indexes for common queries
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_published_date ON videos(published_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_video_type ON videos(video_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_user_rating ON videos(user_rating)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)")
+
+        # Schema version table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY
+            )
+        """)
+
+        # Insert version if not exists
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+                      (self.SCHEMA_VERSION,))
+
+        self.conn.commit()
+        logger.info(f"Database initialized: {self.db_path}")
+
+    def close(self):
+        """Close database connection."""
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    # =========================================================================
+    # Video CRUD Operations
+    # =========================================================================
+
+    def add_video(self, video: VideoRecord) -> int:
+        """
+        Add a new video or update if exists.
+
+        Args:
+            video: VideoRecord to add
+
+        Returns:
+            Database ID of the video
+        """
+        now = datetime.now().isoformat()
+        cursor = self.conn.cursor()
+
+        # Check if video already exists
+        cursor.execute("SELECT id, first_seen FROM videos WHERE video_id = ?",
+                      (video.video_id,))
+        existing = cursor.fetchone()
+
+        if existing:
+            # Update existing video
+            video.id = existing["id"]
+            video.first_seen = existing["first_seen"]
+            video.last_updated = now
+            return self._update_video(video)
+        else:
+            # Insert new video
+            video.first_seen = now
+            video.last_updated = now
+
+            cursor.execute("""
+                INSERT INTO videos (
+                    video_id, title, channel, views, views_count,
+                    published, published_date, duration, url, video_type,
+                    thumbnail_url, thumbnail_local, is_live, is_premiere,
+                    is_upcoming, live_badge, user_comment, user_rating,
+                    source_file, source_date, first_seen, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                video.video_id, video.title, video.channel, video.views,
+                video.views_count, video.published, video.published_date,
+                video.duration, video.url, video.video_type, video.thumbnail_url,
+                video.thumbnail_local, int(video.is_live), int(video.is_premiere),
+                int(video.is_upcoming), video.live_badge, video.user_comment,
+                video.user_rating, video.source_file, video.source_date,
+                video.first_seen, video.last_updated
+            ))
+
+            video.id = cursor.lastrowid
+
+            # Add tags if any
+            if video.user_tags:
+                self._set_video_tags(video.id, video.user_tags)
+
+            self.conn.commit()
+            logger.debug(f"Added video: {video.video_id}")
+            return video.id
+
+    def _update_video(self, video: VideoRecord) -> int:
+        """Update existing video record."""
+        cursor = self.conn.cursor()
+
+        cursor.execute("""
+            UPDATE videos SET
+                title = ?, channel = ?, views = ?, views_count = ?,
+                published = ?, published_date = ?, duration = ?, url = ?,
+                video_type = ?, thumbnail_url = ?, thumbnail_local = ?,
+                is_live = ?, is_premiere = ?, is_upcoming = ?, live_badge = ?,
+                user_comment = ?, user_rating = ?, source_file = ?,
+                source_date = ?, last_updated = ?
+            WHERE id = ?
+        """, (
+            video.title, video.channel, video.views, video.views_count,
+            video.published, video.published_date, video.duration, video.url,
+            video.video_type, video.thumbnail_url, video.thumbnail_local,
+            int(video.is_live), int(video.is_premiere), int(video.is_upcoming),
+            video.live_badge, video.user_comment, video.user_rating,
+            video.source_file, video.source_date, video.last_updated, video.id
+        ))
+
+        # Update tags
+        if video.user_tags is not None:
+            self._set_video_tags(video.id, video.user_tags)
+
+        self.conn.commit()
+        logger.debug(f"Updated video: {video.video_id}")
+        return video.id
+
+    def get_video(self, video_id: str) -> Optional[VideoRecord]:
+        """
+        Get video by YouTube video ID.
+
+        Args:
+            video_id: YouTube video ID
+
+        Returns:
+            VideoRecord or None if not found
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM videos WHERE video_id = ?", (video_id,))
+        row = cursor.fetchone()
+
+        if row:
+            return self._row_to_record(row)
+        return None
+
+    def get_video_by_id(self, db_id: int) -> Optional[VideoRecord]:
+        """Get video by database ID."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM videos WHERE id = ?", (db_id,))
+        row = cursor.fetchone()
+
+        if row:
+            return self._row_to_record(row)
+        return None
+
+    def delete_video(self, video_id: str) -> bool:
+        """
+        Delete video by YouTube video ID.
+
+        Args:
+            video_id: YouTube video ID
+
+        Returns:
+            True if deleted, False if not found
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM videos WHERE video_id = ?", (video_id,))
+        self.conn.commit()
+        deleted = cursor.rowcount > 0
+        if deleted:
+            logger.debug(f"Deleted video: {video_id}")
+        return deleted
+
+    def _row_to_record(self, row: sqlite3.Row) -> VideoRecord:
+        """Convert database row to VideoRecord."""
+        tags = self._get_video_tags(row["id"])
+
+        return VideoRecord(
+            id=row["id"],
+            video_id=row["video_id"],
+            title=row["title"],
+            channel=row["channel"],
+            views=row["views"],
+            views_count=row["views_count"],
+            published=row["published"],
+            published_date=row["published_date"],
+            duration=row["duration"],
+            url=row["url"],
+            video_type=row["video_type"],
+            thumbnail_url=row["thumbnail_url"],
+            thumbnail_local=row["thumbnail_local"],
+            is_live=bool(row["is_live"]),
+            is_premiere=bool(row["is_premiere"]),
+            is_upcoming=bool(row["is_upcoming"]),
+            live_badge=row["live_badge"],
+            user_comment=row["user_comment"],
+            user_rating=row["user_rating"],
+            user_tags=tags,
+            source_file=row["source_file"],
+            source_date=row["source_date"],
+            first_seen=row["first_seen"],
+            last_updated=row["last_updated"]
+        )
+
+    # =========================================================================
+    # Tag Operations
+    # =========================================================================
+
+    def _get_or_create_tag(self, tag_name: str) -> int:
+        """Get tag ID, creating if necessary."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
+        row = cursor.fetchone()
+
+        if row:
+            return row["id"]
+
+        cursor.execute("INSERT INTO tags (name) VALUES (?)", (tag_name,))
+        return cursor.lastrowid
+
+    def _set_video_tags(self, video_db_id: int, tags: List[str]):
+        """Set tags for a video (replaces existing)."""
+        cursor = self.conn.cursor()
+
+        # Remove existing tags
+        cursor.execute("DELETE FROM video_tags WHERE video_id = ?", (video_db_id,))
+
+        # Add new tags
+        for tag in tags:
+            tag_id = self._get_or_create_tag(tag.strip().lower())
+            cursor.execute(
+                "INSERT OR IGNORE INTO video_tags (video_id, tag_id) VALUES (?, ?)",
+                (video_db_id, tag_id)
+            )
+
+    def _get_video_tags(self, video_db_id: int) -> List[str]:
+        """Get all tags for a video."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT t.name FROM tags t
+            JOIN video_tags vt ON t.id = vt.tag_id
+            WHERE vt.video_id = ?
+            ORDER BY t.name
+        """, (video_db_id,))
+        return [row["name"] for row in cursor.fetchall()]
+
+    def get_all_tags(self) -> List[str]:
+        """Get all unique tags in database."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT name FROM tags ORDER BY name")
+        return [row["name"] for row in cursor.fetchall()]
+
+    def add_tag_to_video(self, video_id: str, tag: str):
+        """Add a single tag to a video."""
+        video = self.get_video(video_id)
+        if video:
+            if tag.lower() not in [t.lower() for t in video.user_tags]:
+                video.user_tags.append(tag.strip().lower())
+                self._set_video_tags(video.id, video.user_tags)
+                self.conn.commit()
+
+    def remove_tag_from_video(self, video_id: str, tag: str):
+        """Remove a tag from a video."""
+        video = self.get_video(video_id)
+        if video:
+            video.user_tags = [t for t in video.user_tags if t.lower() != tag.lower()]
+            self._set_video_tags(video.id, video.user_tags)
+            self.conn.commit()
+
+    # =========================================================================
+    # Query / Filter Operations
+    # =========================================================================
+
+    def get_all_videos(self,
+                       order_by: str = "last_updated",
+                       descending: bool = True,
+                       limit: int = None) -> List[VideoRecord]:
+        """
+        Get all videos with optional ordering.
+
+        Args:
+            order_by: Column to sort by
+            descending: Sort direction
+            limit: Maximum number of results
+        """
+        cursor = self.conn.cursor()
+
+        order_dir = "DESC" if descending else "ASC"
+        query = f"SELECT * FROM videos ORDER BY {order_by} {order_dir}"
+
+        if limit:
+            query += f" LIMIT {limit}"
+
+        cursor.execute(query)
+        return [self._row_to_record(row) for row in cursor.fetchall()]
+
+    def search_videos(self,
+                      search_text: str = None,
+                      channel: str = None,
+                      tags: List[str] = None,
+                      video_type: str = None,
+                      min_rating: int = None,
+                      is_live: bool = None,
+                      has_comment: bool = None,
+                      order_by: str = "last_updated",
+                      descending: bool = True) -> List[VideoRecord]:
+        """
+        Search videos with multiple filter criteria.
+
+        Args:
+            search_text: Search in title and channel
+            channel: Filter by channel name (partial match)
+            tags: Filter by tags (videos must have ALL specified tags)
+            video_type: Filter by type ("video" or "short")
+            min_rating: Minimum user rating
+            is_live: Filter by live status
+            has_comment: Filter videos with/without comments
+            order_by: Sort column
+            descending: Sort direction
+        """
+        cursor = self.conn.cursor()
+
+        conditions = []
+        params = []
+
+        if search_text:
+            conditions.append("(title LIKE ? OR channel LIKE ?)")
+            params.extend([f"%{search_text}%", f"%{search_text}%"])
+
+        if channel:
+            conditions.append("channel LIKE ?")
+            params.append(f"%{channel}%")
+
+        if video_type:
+            conditions.append("video_type = ?")
+            params.append(video_type)
+
+        if min_rating is not None:
+            conditions.append("user_rating >= ?")
+            params.append(min_rating)
+
+        if is_live is not None:
+            conditions.append("is_live = ?")
+            params.append(int(is_live))
+
+        if has_comment is not None:
+            if has_comment:
+                conditions.append("user_comment IS NOT NULL AND user_comment != ''")
+            else:
+                conditions.append("(user_comment IS NULL OR user_comment = '')")
+
+        # Build query
+        order_dir = "DESC" if descending else "ASC"
+
+        if tags:
+            # Subquery for tag filtering
+            tag_placeholders = ",".join("?" * len(tags))
+            query = f"""
+                SELECT v.* FROM videos v
+                JOIN video_tags vt ON v.id = vt.video_id
+                JOIN tags t ON vt.tag_id = t.id
+                WHERE t.name IN ({tag_placeholders})
+            """
+            params = list(tags) + params
+
+            if conditions:
+                query += " AND " + " AND ".join(conditions)
+
+            query += f"""
+                GROUP BY v.id
+                HAVING COUNT(DISTINCT t.name) = {len(tags)}
+                ORDER BY v.{order_by} {order_dir}
+            """
+        else:
+            query = f"SELECT * FROM videos"
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            query += f" ORDER BY {order_by} {order_dir}"
+
+        cursor.execute(query, params)
+        return [self._row_to_record(row) for row in cursor.fetchall()]
+
+    def get_channels(self) -> List[str]:
+        """Get all unique channel names."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT channel FROM videos
+            WHERE channel IS NOT NULL
+            ORDER BY channel
+        """)
+        return [row["channel"] for row in cursor.fetchall()]
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get database statistics."""
+        cursor = self.conn.cursor()
+
+        stats = {}
+
+        cursor.execute("SELECT COUNT(*) as count FROM videos")
+        stats["total_videos"] = cursor.fetchone()["count"]
+
+        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE video_type = 'short'")
+        stats["shorts"] = cursor.fetchone()["count"]
+
+        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE video_type = 'video'")
+        stats["videos"] = cursor.fetchone()["count"]
+
+        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE is_live = 1")
+        stats["live"] = cursor.fetchone()["count"]
+
+        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE user_rating IS NOT NULL")
+        stats["rated"] = cursor.fetchone()["count"]
+
+        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE user_comment IS NOT NULL AND user_comment != ''")
+        stats["with_comments"] = cursor.fetchone()["count"]
+
+        cursor.execute("SELECT COUNT(DISTINCT channel) as count FROM videos")
+        stats["channels"] = cursor.fetchone()["count"]
+
+        cursor.execute("SELECT COUNT(*) as count FROM tags")
+        stats["tags"] = cursor.fetchone()["count"]
+
+        return stats
+
+    # =========================================================================
+    # Import Operations
+    # =========================================================================
+
+    def import_from_extraction(self, videos: List[Any], source_file: str = None) -> int:
+        """
+        Import videos from extraction (VideoData objects).
+
+        Args:
+            videos: List of VideoData objects from yt_extractor
+            source_file: Source HTML filename
+
+        Returns:
+            Number of videos imported/updated
+        """
+        count = 0
+        for video in videos:
+            record = VideoRecord(
+                video_id=video.video_id,
+                title=video.title,
+                channel=video.channel,
+                views=video.views,
+                views_count=video.views_count,
+                published=video.published,
+                published_date=video.published_date,
+                duration=video.duration,
+                url=video.url,
+                video_type=video.video_type,
+                thumbnail_url=video.thumbnail_url,
+                thumbnail_local=video.thumbnail_local,
+                is_live=video.is_live,
+                is_premiere=video.is_premiere,
+                is_upcoming=video.is_upcoming,
+                live_badge=video.live_badge,
+                source_file=source_file or video.source_file,
+                source_date=video.source_date
+            )
+            self.add_video(record)
+            count += 1
+
+        # Record import in history
+        if source_file:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT INTO import_history (filename, import_date, video_count, source_type)
+                VALUES (?, ?, ?, ?)
+            """, (source_file, datetime.now().isoformat(), count, "html"))
+            self.conn.commit()
+
+        logger.info(f"Imported {count} videos from {source_file}")
+        return count
+
+    def get_import_history(self) -> List[Dict]:
+        """Get import history."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM import_history ORDER BY import_date DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+# Convenience function for quick database access
+def get_database(db_path: str = "yt_videos.db") -> VideoDatabase:
+    """Get a database instance."""
+    return VideoDatabase(db_path)

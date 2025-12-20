@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+ENV/
+.mypy_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test data (user-specific HTML files)
+test_data/
+
+# Input HTML files (may contain personal YouTube history)
+*.html
+!html_report.py
+
+# Output files
+output/
+*.csv
+*.json
+
+# Database (contains user data)
+*.db
+
+# Downloaded thumbnails
+thumbnails/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary/working files
+CLAUDE_extension_*.md
+PROMPT_*.md
