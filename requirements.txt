@@ -1,4 +1,4 @@
-# YT Overview Extractor - Dependencies
+# YouTube Video Manager - Dependencies
 
 # HTML Parsing
 beautifulsoup4>=4.12.0

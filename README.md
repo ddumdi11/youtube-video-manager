@@ -1,4 +1,4 @@
-# YT Overview Extractor
+# YouTube Video Manager
 
 > ### *"Every ripple reveals the pond."*
 > ### *„Jede Welle offenbart den Teich."*
@@ -33,109 +33,119 @@ Jede Kommunikation enthält eine **Selbstoffenbarung** – bewusst oder unbewuss
 
 ## Überblick
 
-Ein Python-Tool zum Extrahieren von Video-Metadaten aus gespeicherten YouTube-HTML-Seiten.
+Eine Python-Desktop-Anwendung zum Extrahieren, Verwalten und KI-gestützten Analysieren von YouTube-Video-Metadaten.
 
-### Unterstützte Formate
+### Kernfunktionen
 
-1. **Standard HTML** (Strg+S) - ~20-25 Videos
-2. **SingleFile-Export** - **400+ Videos** (komplett gescrollte Seiten!)
+- **Video-Extraktion** aus gespeicherten YouTube-HTML-Seiten (Standard + SingleFile)
+- **Video-Manager** mit YouTube-Style Dark Theme, Thumbnails, Tags, Ratings
+- **KI-Analyse** mit Claude: Zusammenfassungen, Themen-Erkennung, Chat
+- **Claim-Extraktion**: Automatische Behauptungs-Extraktion aus Transkripten
+- **OneTab-Import**: Videos direkt aus OneTab-Exporten importieren
+- **Transkript-Service**: YouTube-Transkripte automatisch abrufen
 
-### Unterstützte Seitentypen
+### Unterstützte Import-Formate
 
-1. **Kanal-Shorts-Übersicht** (`/@channel/shorts`)
-2. **Algorithmus-Empfehlungen** (YouTube-Startseite)
-
-## Extrahierte Daten
-
-| Feld | Shorts | Algorithmus |
-|------|--------|-------------|
-| Video-ID | ✅ | ✅ |
-| Titel | ✅ | ✅ |
-| Aufrufe | ✅ | ✅ |
-| Kanal | ❌ (aus Kontext) | ✅ |
-| Upload-Zeitraum | ❌ | ✅ |
-| Dauer | ❌ (Shorts=<60s) | ✅ |
-| Thumbnail-URL | ✅ | ✅ |
-| Live-Status | ✅ | ✅ |
-| Live-Badge | ✅ | ✅ |
+| Format | Videos | Beschreibung |
+|--------|--------|--------------|
+| Standard HTML (Strg+S) | ~20-25 | Schnell, JSON-basiert |
+| SingleFile-Export | **400+** | Komplett gescrollte Seiten |
+| OneTab-Export | beliebig | Clipboard-Paste oder Datei |
 
 ## Installation
 
 ```bash
+# Repository klonen
+git clone https://github.com/ddumdi11/youtube-video-manager.git
+cd youtube-video-manager
+
+# Virtuelle Umgebung erstellen und aktivieren
+python -m venv venv
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # Linux/Mac
+
+# Abhängigkeiten installieren
 pip install -r requirements.txt
+
+# API-Key konfigurieren (für KI-Analyse)
+copy .env.example .env
+# .env editieren und ANTHROPIC_API_KEY eintragen
+```
+
+### Schnellstart (Windows)
+
+```bash
+start.bat
 ```
 
 ## Verwendung
 
-### Schnellstart (Standard HTML)
+### Video-Manager (Hauptanwendung)
 
 ```bash
-# 1. YouTube-Seite öffnen
-# 2. Strg+S → "Webseite, nur HTML" speichern
-# 3. Extrahieren (~ 20-25 Videos)
-python yt_extractor.py input.html -o results.csv
+python yt_app.py
 ```
 
-### Für viele Videos (SingleFile)
+**Features:**
+- Grid-Ansicht mit Thumbnails (YouTube-Style Dark Theme)
+- SQLite-Datenbank für persistente Speicherung
+- Videos bearbeiten: Metadaten, Kommentare, Sterne-Bewertung (1-5), Tags
+- Filter nach Kanal, Typ, Rating, Live-Status
+- Import: HTML-Dateien, Ordner, OneTab-Export
+- **Analyse-Menü:**
+  - Transkripte automatisch abrufen
+  - KI-Analyse (Zusammenfassung, Themen, Personen)
+  - Claim-Extraktion (Behauptungen strukturiert extrahieren)
+  - Metadaten via yt-dlp aktualisieren
+  - Chat: Fragen zur Video-Sammlung stellen
+- Analyse-Status-Badges auf jeder Video-Card (T/A/!)
+- CSV-Export mit Analyse-Spalten
 
-```bash
-# 1. SingleFile Extension installieren (siehe unten)
-# 2. YouTube-Seite öffnen und KOMPLETT herunterscrollen
-# 3. Rechtsklick → "Save with SingleFile"
-# 4. Extrahieren (400+ Videos!)
-python yt_extractor.py singlefile.html -o results.csv
-```
-
-### Weitere Optionen
-
-```bash
-# JSON-Format mit pretty-print
-python yt_extractor.py input.html --format json --pretty -o results.json
-
-# Mit Thumbnail-Download
-python yt_extractor.py input.html --download-thumbnails
-python yt_extractor.py input.html --download-thumbnails --thumbnail-dir ./my_thumbs
-
-# HTML-Report generieren (mit Thumbnails und Filterung)
-python yt_extractor.py input.html --html-report report.html --download-thumbnails
-python yt_extractor.py input.html --html-report report.html --open-report
-
-# Verbose-Modus für Debugging
-python yt_extractor.py input.html -v
-```
-
-## GUI-Oberfläche
-
-Für eine grafische Benutzeroberfläche (keine zusätzlichen Abhängigkeiten):
+### Extraktions-GUI
 
 ```bash
 python yt_gui.py
 ```
 
-**Features der GUI:**
+Für schnelle Batch-Extraktion von HTML-Dateien zu CSV/JSON/HTML-Reports.
 
-- Einzelne Datei, mehrere Dateien oder ganzen Ordner auswählen
-- Batch-Verarbeitung mehrerer HTML-Dateien
-- Thumbnails automatisch herunterladen
-- HTML-Report mit Suchfunktion und Filter generieren
-- CSV/JSON Export optional
-- Fortschrittsanzeige und Log-Ausgabe
-- Report automatisch im Browser öffnen
+### CLI
 
-**HTML-Report Features:**
+```bash
+# CSV-Export
+python yt_extractor.py input.html -o results.csv
 
-- YouTube-Style Dark Theme
-- Responsive Video-Grid mit Thumbnails
-- Suchfunktion (nach Titel)
-- Filter nach Typ (Videos/Shorts)
-- Filter nach Live-Status (Live/Premiere/Geplant/Unbekannt)
-- Sortierung (Aufrufe aufsteigend/absteigend, Titel A-Z/Z-A)
-- Live-Badges mit visueller Hervorhebung (🔴 LIVE pulsierend)
-- Fallback auf Online-Thumbnails wenn lokale nicht verfügbar
+# JSON mit pretty-print
+python yt_extractor.py input.html --format json --pretty -o results.json
+
+# HTML-Report mit Thumbnails
+python yt_extractor.py input.html --html-report report.html --download-thumbnails --open-report
+
+# Verbose-Modus
+python yt_extractor.py input.html -v
+```
+
+## KI-Analyse-Pipeline
+
+```
+1. Videos importieren (HTML / OneTab / Ordner)
+      ↓
+2. Metadaten aktualisieren (yt-dlp) — optional
+      ↓
+3. Transkripte holen (youtube-transcript-api)
+      ↓
+4. KI-Analyse starten (Claude: Zusammenfassung + Themen)
+      ↓
+5. Claims extrahieren (strukturierte Behauptungen)
+      ↓
+6. Chat: Fragen an die Video-Sammlung stellen
+```
+
+Jeder Schritt ist über das **Analyse-Menü** in der App erreichbar und läuft als Batch über alle relevanten Videos.
 
 ## SingleFile Extension (empfohlen für > 20 Videos)
 
-Für **Chromium-basierte Browser** (Chrome, Edge, Brave, **Comet**):
+Für **Chromium-basierte Browser** (Chrome, Edge, Brave, Comet):
 
 - Chrome Web Store: [SingleFile](https://chromewebstore.google.com/detail/singlefile/mpiodijhokgodhhofbcjdecpffjipkle)
 
@@ -168,85 +178,53 @@ Für **Firefox**:
 - Extrahiert Metadaten aus aria-labels und DOM-Text
 - Unterstützt **400+ Videos** aus gescrollten Seiten
 
-#### Automatische Format-Erkennung
-
-Der Parser erkennt automatisch, welches Format vorliegt und wählt die passende Methode!
-
 ### Live-Video-Erkennung
-
-Live-Streams, Premieren und geplante Videos werden automatisch erkannt:
 
 | Status | Badge | Beschreibung |
 |--------|-------|--------------|
-| **LIVE** | 🔴 LIVE | Aktiver Live-Stream |
-| **PREMIERE** | 🎬 PREMIERE | Geplante Premiere |
-| **UPCOMING** | ⏳ GEPLANT | Geplanter Stream (noch nicht gestartet) |
-| **UNKNOWN** | ? | Video ohne Metadaten (wahrscheinlich Live) |
+| **LIVE** | LIVE | Aktiver Live-Stream |
+| **PREMIERE** | PREMIERE | Geplante Premiere |
+| **UPCOMING** | GEPLANT | Geplanter Stream |
 
-**Fallback-Werte für Live-Videos:**
+### Datenbank-Schema
 
-Da Live-Videos oft keine Aufrufzahlen oder Veröffentlichungsdatum haben, werden automatisch sinnvolle Fallback-Werte gesetzt:
-
-- `published` → "Live am {source_date}" / "Premiere am {source_date}"
-- `views` → "Live" / "Premiere" / "Geplant"
-- `views_count` → 0
-
-Das `source_date` ist der Zeitpunkt, an dem die HTML-Seite gespeichert wurde.
-
-## Video-Manager App (NEU)
-
-Für die Verwaltung und Bearbeitung der extrahierten Videos:
-
-```bash
-python yt_app.py
-```
-
-**Features der Manager-App:**
-
-- Grid-Ansicht mit Thumbnails (YouTube-Style)
-- SQLite-Datenbank für persistente Speicherung
-- Videos bearbeiten: Metadaten korrigieren, Kommentare hinzufügen
-- Sterne-Bewertung (1-5)
-- Tag-System für eigene Kategorisierung
-- Filter nach Kanal, Typ, Rating, Live-Status
-- Textsuche in Titel und Kanal
-- Import direkt aus HTML-Dateien
-- CSV-Export der gefilterten Ergebnisse
-- Klick auf Video → Bearbeiten oder im Browser öffnen
-
-**Workflow:**
-
-1. `File → Import HTML` oder `Import Folder`
-2. Videos werden in Datenbank gespeichert (`yt_videos.db`)
-3. Klick auf Karte → Bearbeitungs-Dialog
-4. Kommentare/Tags/Rating hinzufügen
-5. Fehlende Metadaten manuell ergänzen (z.B. bei Live-Videos)
+SQLite mit automatischer Migration (aktuell Schema v2):
+- **videos**: Metadaten, Analyse-Daten, User-Annotationen
+- **tags** + **video_tags**: Many-to-many Tag-System
+- **chat_history**: Persistenter Chat-Verlauf
+- **import_history**: Audit-Trail aller Importe
 
 ## Projektstruktur
 
 ```text
-yt_overview_extractor/
-├── CLAUDE.md           # Anweisungen für Claude Code
-├── README.md           # Diese Datei
-├── requirements.txt    # Python-Abhängigkeiten
-├── yt_extractor.py     # Haupt-Script (CLI)
-├── yt_gui.py           # GUI für Extraktion + Reports
-├── yt_app.py           # GUI für Verwaltung + Bearbeitung (NEU)
-├── yt_database.py      # SQLite-Datenbank-Modul (NEU)
-├── html_report.py      # HTML-Report-Generator
-├── yt_videos.db        # SQLite-Datenbank (wird erstellt)
-├── test_data/          # Test-HTML-Dateien
-└── output/             # Generierte Exports
+youtube-video-manager/
+├── README.md              # Diese Datei
+├── requirements.txt       # Python-Abhängigkeiten
+├── .env.example           # API-Key Template
+├── start.bat              # Windows-Starter
+├── yt_app.py              # Video-Manager (Hauptanwendung)
+├── yt_gui.py              # Extraktions-GUI
+├── yt_extractor.py        # Extraktions-Engine (CLI)
+├── yt_database.py         # SQLite-Datenbank-Modul
+├── html_report.py         # HTML-Report-Generator
+├── config.py              # Konfiguration und Logging
+├── transcript_service.py  # Transkript-Abruf
+├── metadata_service.py    # Metadaten via yt-dlp
+├── llm_analyzer.py        # KI-Analyse (Claude)
+├── onetab_parser.py       # OneTab-Import-Parser
+├── yt_videos.db           # Datenbank (wird erstellt)
+├── thumbnails/            # Heruntergeladene Thumbnails
+└── output/                # Generierte Reports/Exports
 ```
 
 ## Zwei GUI-Apps
 
 | App | Starten | Zweck |
 |-----|---------|-------|
+| `yt_app.py` | `python yt_app.py` | Datenbank-Verwaltung, Analyse, Chat |
 | `yt_gui.py` | `python yt_gui.py` | Schnelle Extraktion → HTML-Report/CSV |
-| `yt_app.py` | `python yt_app.py` | Datenbank-Verwaltung, Bearbeitung, Tags |
 
-**Empfehlung:** Für einmalige Reports → `yt_gui.py`. Für dauerhafte Sammlung → `yt_app.py`.
+**Empfehlung:** Für dauerhafte Sammlung und Analyse → `yt_app.py`. Für einmalige Reports → `yt_gui.py`.
 
 ## Lizenz
 

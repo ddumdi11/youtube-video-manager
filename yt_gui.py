@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YT Overview Extractor - Tkinter GUI
+YouTube Video Manager - Extraction GUI
 
 Provides a graphical user interface for:
 - Single file selection
@@ -28,11 +28,11 @@ from html_report import generate_html_report
 
 
 class YTExtractorGUI:
-    """Main GUI application for YT Overview Extractor."""
+    """Main GUI application for YouTube Video Manager - Extractor."""
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("YT Overview Extractor")
+        self.root.title("YouTube Video Manager - Extractor")
         self.root.geometry("700x600")
         self.root.minsize(650, 550)
 

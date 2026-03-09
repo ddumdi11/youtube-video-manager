@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HTML Report Generator for YT Overview Extractor.
+HTML Report Generator for YouTube Video Manager.
 
 Generates a visual HTML report with thumbnails and video metadata.
 """

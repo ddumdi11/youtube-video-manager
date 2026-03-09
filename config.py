@@ -1,4 +1,4 @@
-"""Konfiguration und Logging für YT Overview Extractor."""
+"""Konfiguration und Logging für YouTube Video Manager."""
 
 import logging
 import os

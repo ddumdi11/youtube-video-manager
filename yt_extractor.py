@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YT Overview Extractor - Extracts video metadata from saved YouTube HTML pages.
+YouTube Video Manager - Extracts video metadata from saved YouTube HTML pages.
 
 Supports:
 - Channel Shorts pages (/@channel/shorts)
