@@ -46,6 +46,15 @@ class VideoRecord:
     user_rating: Optional[int] = None  # 1-5 stars
     user_tags: List[str] = None  # Stored as JSON in DB
 
+    # Analysis data (from youtube_analyzer merge)
+    transcript_text: Optional[str] = None
+    transcript_language: Optional[str] = None
+    summary: Optional[str] = None
+    themes: Optional[str] = None  # JSON array of theme tags
+    claims: Optional[str] = None  # JSON array of extracted claims
+    analysis_status: str = "none"  # none / transcript / analyzed / error
+    import_group: Optional[str] = None  # OneTab group name
+
     # Metadata
     source_file: Optional[str] = None
     source_date: Optional[str] = None
@@ -68,7 +77,7 @@ class VideoRecord:
 class VideoDatabase:
     """SQLite database for video metadata storage."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, db_path: str | Path = "yt_videos.db"):
         """
@@ -115,6 +124,13 @@ class VideoDatabase:
                 live_badge TEXT,
                 user_comment TEXT,
                 user_rating INTEGER CHECK(user_rating IS NULL OR (user_rating >= 1 AND user_rating <= 5)),
+                transcript_text TEXT,
+                transcript_language TEXT,
+                summary TEXT,
+                themes TEXT,
+                claims TEXT,
+                analysis_status TEXT DEFAULT 'none',
+                import_group TEXT,
                 source_file TEXT,
                 source_date TEXT,
                 first_seen TEXT NOT NULL,
@@ -152,12 +168,15 @@ class VideoDatabase:
             )
         """)
 
-        # Create indexes for common queries
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_published_date ON videos(published_date)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_video_type ON videos(video_type)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_user_rating ON videos(user_rating)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)")
+        # Chat history table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
 
         # Schema version table
         cursor.execute("""
@@ -166,12 +185,53 @@ class VideoDatabase:
             )
         """)
 
-        # Insert version if not exists
-        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+        # Check current version and migrate BEFORE creating indexes on new columns
+        cursor.execute("SELECT MAX(version) as v FROM schema_version")
+        row = cursor.fetchone()
+        current_version = row["v"] if row and row["v"] else 0
+
+        if current_version < 2:
+            self._migrate_to_v2(cursor)
+
+        # Create indexes (after migration so new columns exist)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_published_date ON videos(published_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_video_type ON videos(video_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_user_rating ON videos(user_rating)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_analysis_status ON videos(analysis_status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)")
+
+        # Insert/update version
+        cursor.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
                       (self.SCHEMA_VERSION,))
 
         self.conn.commit()
-        logger.info(f"Database initialized: {self.db_path}")
+        logger.info(f"Database initialized: {self.db_path} (schema v{self.SCHEMA_VERSION})")
+
+    def _migrate_to_v2(self, cursor):
+        """Migrate schema from v1 to v2: add analysis columns and chat_history."""
+        logger.info("Migrating database schema to v2...")
+
+        # Add new columns to videos table (SQLite ALTER TABLE ADD COLUMN)
+        new_columns = [
+            ("transcript_text", "TEXT"),
+            ("transcript_language", "TEXT"),
+            ("summary", "TEXT"),
+            ("themes", "TEXT"),
+            ("claims", "TEXT"),
+            ("analysis_status", "TEXT DEFAULT 'none'"),
+            ("import_group", "TEXT"),
+        ]
+
+        for col_name, col_type in new_columns:
+            try:
+                cursor.execute(f"ALTER TABLE videos ADD COLUMN {col_name} {col_type}")
+                logger.debug(f"Added column: {col_name}")
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+
+        logger.info("Schema migration to v2 complete")
 
     def close(self):
         """Close database connection."""
@@ -224,15 +284,19 @@ class VideoDatabase:
                     published, published_date, duration, url, video_type,
                     thumbnail_url, thumbnail_local, is_live, is_premiere,
                     is_upcoming, live_badge, user_comment, user_rating,
+                    transcript_text, transcript_language, summary, themes,
+                    claims, analysis_status, import_group,
                     source_file, source_date, first_seen, last_updated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 video.video_id, video.title, video.channel, video.views,
                 video.views_count, video.published, video.published_date,
                 video.duration, video.url, video.video_type, video.thumbnail_url,
                 video.thumbnail_local, int(video.is_live), int(video.is_premiere),
                 int(video.is_upcoming), video.live_badge, video.user_comment,
-                video.user_rating, video.source_file, video.source_date,
+                video.user_rating, video.transcript_text, video.transcript_language,
+                video.summary, video.themes, video.claims, video.analysis_status,
+                video.import_group, video.source_file, video.source_date,
                 video.first_seen, video.last_updated
             ))
 
@@ -256,8 +320,10 @@ class VideoDatabase:
                 published = ?, published_date = ?, duration = ?, url = ?,
                 video_type = ?, thumbnail_url = ?, thumbnail_local = ?,
                 is_live = ?, is_premiere = ?, is_upcoming = ?, live_badge = ?,
-                user_comment = ?, user_rating = ?, source_file = ?,
-                source_date = ?, last_updated = ?
+                user_comment = ?, user_rating = ?,
+                transcript_text = ?, transcript_language = ?, summary = ?,
+                themes = ?, claims = ?, analysis_status = ?, import_group = ?,
+                source_file = ?, source_date = ?, last_updated = ?
             WHERE id = ?
         """, (
             video.title, video.channel, video.views, video.views_count,
@@ -265,6 +331,8 @@ class VideoDatabase:
             video.video_type, video.thumbnail_url, video.thumbnail_local,
             int(video.is_live), int(video.is_premiere), int(video.is_upcoming),
             video.live_badge, video.user_comment, video.user_rating,
+            video.transcript_text, video.transcript_language, video.summary,
+            video.themes, video.claims, video.analysis_status, video.import_group,
             video.source_file, video.source_date, video.last_updated, video.id
         ))
 
@@ -347,10 +415,17 @@ class VideoDatabase:
             user_comment=row["user_comment"],
             user_rating=row["user_rating"],
             user_tags=tags,
+            transcript_text=row["transcript_text"],
+            transcript_language=row["transcript_language"],
+            summary=row["summary"],
+            themes=row["themes"],
+            claims=row["claims"],
+            analysis_status=row["analysis_status"] or "none",
+            import_group=row["import_group"],
             source_file=row["source_file"],
             source_date=row["source_date"],
             first_seen=row["first_seen"],
-            last_updated=row["last_updated"]
+            last_updated=row["last_updated"],
         )
 
     # =========================================================================
@@ -571,7 +646,125 @@ class VideoDatabase:
         cursor.execute("SELECT COUNT(*) as count FROM tags")
         stats["tags"] = cursor.fetchone()["count"]
 
+        # Analysis stats
+        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE transcript_text IS NOT NULL")
+        stats["with_transcript"] = cursor.fetchone()["count"]
+
+        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE summary IS NOT NULL")
+        stats["with_summary"] = cursor.fetchone()["count"]
+
+        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE claims IS NOT NULL AND claims != '[]'")
+        stats["with_claims"] = cursor.fetchone()["count"]
+
+        for status in ("none", "transcript", "analyzed", "error"):
+            cursor.execute("SELECT COUNT(*) as count FROM videos WHERE analysis_status = ?", (status,))
+            stats[f"status_{status}"] = cursor.fetchone()["count"]
+
         return stats
+
+    # =========================================================================
+    # Analysis Operations
+    # =========================================================================
+
+    def update_transcript(self, video_id: str, transcript_text: str,
+                         transcript_language: str) -> bool:
+        """Update transcript for a video."""
+        cursor = self.conn.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute("""
+            UPDATE videos SET
+                transcript_text = ?, transcript_language = ?,
+                analysis_status = CASE
+                    WHEN analysis_status = 'none' THEN 'transcript'
+                    ELSE analysis_status
+                END,
+                last_updated = ?
+            WHERE video_id = ?
+        """, (transcript_text, transcript_language, now, video_id))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def update_summary(self, video_id: str, summary: str, themes: str) -> bool:
+        """Update summary and themes for a video."""
+        cursor = self.conn.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute("""
+            UPDATE videos SET
+                summary = ?, themes = ?, analysis_status = 'analyzed',
+                last_updated = ?
+            WHERE video_id = ?
+        """, (summary, themes, now, video_id))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def update_claims(self, video_id: str, claims_json: str) -> bool:
+        """Update extracted claims for a video."""
+        cursor = self.conn.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute("""
+            UPDATE videos SET claims = ?, last_updated = ?
+            WHERE video_id = ?
+        """, (claims_json, now, video_id))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def update_analysis_status(self, video_id: str, status: str) -> bool:
+        """Update analysis status for a video."""
+        cursor = self.conn.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute("""
+            UPDATE videos SET analysis_status = ?, last_updated = ?
+            WHERE video_id = ?
+        """, (status, now, video_id))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def get_videos_by_status(self, status: str) -> List[VideoRecord]:
+        """Get all videos with a specific analysis status."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM videos WHERE analysis_status = ? ORDER BY last_updated DESC",
+                      (status,))
+        return [self._row_to_record(row) for row in cursor.fetchall()]
+
+    def get_analyzed_videos(self) -> List[VideoRecord]:
+        """Get all videos that have been analyzed (have summary)."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM videos WHERE summary IS NOT NULL ORDER BY last_updated DESC")
+        return [self._row_to_record(row) for row in cursor.fetchall()]
+
+    # =========================================================================
+    # Chat History Operations
+    # =========================================================================
+
+    def add_chat_message(self, role: str, content: str) -> int:
+        """Add a chat message to history."""
+        cursor = self.conn.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute(
+            "INSERT INTO chat_history (role, content, created_at) VALUES (?, ?, ?)",
+            (role, content, now),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_chat_history(self, limit: int = 50) -> List[Dict]:
+        """Get recent chat history."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM chat_history ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        rows.reverse()  # Oldest first
+        return rows
+
+    def clear_chat_history(self) -> int:
+        """Clear all chat history. Returns number of deleted messages."""
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM chat_history")
+        count = cursor.rowcount
+        self.conn.commit()
+        return count
 
     # =========================================================================
     # Import Operations
@@ -623,6 +816,41 @@ class VideoDatabase:
             self.conn.commit()
 
         logger.info(f"Imported {count} videos from {source_file}")
+        return count
+
+    def import_from_onetab(self, parsed_videos, source_name: str = "onetab") -> int:
+        """
+        Import videos from OneTab parser (ParsedVideo objects).
+
+        Args:
+            parsed_videos: List of ParsedVideo objects from onetab_parser
+            source_name: Source identifier
+
+        Returns:
+            Number of videos imported/updated
+        """
+        count = 0
+        for pv in parsed_videos:
+            record = VideoRecord(
+                video_id=pv.youtube_id,
+                title=pv.title or f"Video {pv.youtube_id}",
+                url=pv.url,
+                import_group=pv.group,
+                source_file=source_name,
+                analysis_status="none",
+            )
+            self.add_video(record)
+            count += 1
+
+        # Record import in history
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT INTO import_history (filename, import_date, video_count, source_type)
+            VALUES (?, ?, ?, ?)
+        """, (source_name, datetime.now().isoformat(), count, "onetab"))
+        self.conn.commit()
+
+        logger.info(f"Imported {count} videos from OneTab ({source_name})")
         return count
 
     def get_import_history(self) -> List[Dict]:

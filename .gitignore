@@ -8,6 +8,8 @@ venv/
 .venv/
 ENV/
 .mypy_cache/
+.env
+yt_videos.db
 
 # IDE
 .idea/
@@ -20,7 +22,6 @@ test_data/
 
 # Input HTML files (may contain personal YouTube history)
 *.html
-!html_report.py
 
 # Output files
 output/

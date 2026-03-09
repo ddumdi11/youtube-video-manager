@@ -5,8 +5,14 @@ beautifulsoup4>=4.12.0
 lxml>=5.0.0
 
 # Desktop App (yt_app.py)
-Pillow>=10.0.0        # Für Thumbnail-Darstellung
+Pillow>=10.0.0        # Thumbnail-Darstellung
 
-# (Optional) Für erweiterte Funktionen
-# pandas>=2.0.0        # Für DataFrame-Export
-# rich>=13.0.0         # Für schöne Terminal-Ausgabe
+# Konfiguration
+python-dotenv>=1.0.0  # .env Dateien laden
+
+# Transkript & Metadaten
+youtube-transcript-api>=0.6.2   # YouTube-Transkripte abrufen
+yt-dlp>=2024.1.0               # Video-Metadaten via yt-dlp
+
+# KI-Analyse (Claude)
+anthropic>=0.40.0              # Claude API Client
