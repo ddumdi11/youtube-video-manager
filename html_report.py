@@ -34,7 +34,10 @@ def generate_html_report(
     """
     # Determine thumbnail base path relative to HTML file
     if thumbnail_dir:
-        thumb_base = thumbnail_dir.relative_to(output_path.parent) if thumbnail_dir.is_absolute() else thumbnail_dir
+        try:
+            thumb_base = thumbnail_dir.relative_to(output_path.parent) if thumbnail_dir.is_absolute() else thumbnail_dir
+        except ValueError:
+            thumb_base = thumbnail_dir
     else:
         thumb_base = Path("thumbnails")
 

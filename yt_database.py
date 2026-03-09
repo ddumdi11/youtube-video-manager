@@ -79,6 +79,13 @@ class VideoDatabase:
 
     SCHEMA_VERSION = 2
 
+    # Allowed columns for ORDER BY (prevents SQL injection)
+    ALLOWED_ORDER_COLUMNS = frozenset({
+        "id", "video_id", "title", "channel", "views_count",
+        "published_date", "duration", "video_type", "is_live",
+        "user_rating", "analysis_status", "first_seen", "last_updated",
+    })
+
     def __init__(self, db_path: str | Path = "yt_videos.db"):
         """
         Initialize database connection.
@@ -311,7 +318,7 @@ class VideoDatabase:
             return video.id
 
     def _update_video(self, video: VideoRecord) -> int:
-        """Update existing video record."""
+        """Update existing video record (full overwrite, used by edit dialog)."""
         cursor = self.conn.cursor()
 
         cursor.execute("""
@@ -343,6 +350,55 @@ class VideoDatabase:
         self.conn.commit()
         logger.debug(f"Updated video: {video.video_id}")
         return video.id
+
+    def _merge_video(self, video: VideoRecord) -> int:
+        """Merge-update: only update metadata fields, preserve user annotations and analysis data."""
+        now = datetime.now().isoformat()
+        cursor = self.conn.cursor()
+
+        cursor.execute("SELECT id, first_seen FROM videos WHERE video_id = ?",
+                      (video.video_id,))
+        existing = cursor.fetchone()
+
+        if not existing:
+            # New video, just insert
+            video.first_seen = now
+            video.last_updated = now
+            return self.add_video(video)
+
+        # Only update metadata fields, preserve everything else
+        cursor.execute("""
+            UPDATE videos SET
+                title = COALESCE(?, title),
+                channel = COALESCE(?, channel),
+                views = COALESCE(?, views),
+                views_count = COALESCE(?, views_count),
+                published = COALESCE(?, published),
+                published_date = COALESCE(?, published_date),
+                duration = COALESCE(?, duration),
+                url = COALESCE(?, url),
+                video_type = COALESCE(?, video_type),
+                thumbnail_url = COALESCE(?, thumbnail_url),
+                thumbnail_local = COALESCE(?, thumbnail_local),
+                is_live = ?, is_premiere = ?, is_upcoming = ?,
+                live_badge = COALESCE(?, live_badge),
+                source_file = COALESCE(?, source_file),
+                source_date = COALESCE(?, source_date),
+                import_group = COALESCE(?, import_group),
+                last_updated = ?
+            WHERE video_id = ?
+        """, (
+            video.title, video.channel, video.views, video.views_count,
+            video.published, video.published_date, video.duration, video.url,
+            video.video_type, video.thumbnail_url, video.thumbnail_local,
+            int(video.is_live), int(video.is_premiere), int(video.is_upcoming),
+            video.live_badge, video.source_file, video.source_date,
+            video.import_group, now, video.video_id,
+        ))
+
+        self.conn.commit()
+        logger.debug(f"Merge-updated video: {video.video_id}")
+        return existing["id"]
 
     def get_video(self, video_id: str) -> Optional[VideoRecord]:
         """
@@ -497,6 +553,12 @@ class VideoDatabase:
     # Query / Filter Operations
     # =========================================================================
 
+    def _validate_order_by(self, order_by: str) -> str:
+        """Validate order_by column against allowlist to prevent SQL injection."""
+        if order_by not in self.ALLOWED_ORDER_COLUMNS:
+            raise ValueError(f"Invalid order_by column: {order_by}")
+        return order_by
+
     def get_all_videos(self,
                        order_by: str = "last_updated",
                        descending: bool = True,
@@ -505,10 +567,11 @@ class VideoDatabase:
         Get all videos with optional ordering.
 
         Args:
-            order_by: Column to sort by
+            order_by: Column to sort by (must be in ALLOWED_ORDER_COLUMNS)
             descending: Sort direction
             limit: Maximum number of results
         """
+        order_by = self._validate_order_by(order_by)
         cursor = self.conn.cursor()
 
         order_dir = "DESC" if descending else "ASC"
@@ -576,6 +639,7 @@ class VideoDatabase:
                 conditions.append("(user_comment IS NULL OR user_comment = '')")
 
         # Build query
+        order_by = self._validate_order_by(order_by)
         order_dir = "DESC" if descending else "ASC"
 
         if tags:
@@ -594,9 +658,10 @@ class VideoDatabase:
 
             query += f"""
                 GROUP BY v.id
-                HAVING COUNT(DISTINCT t.name) = {len(tags)}
+                HAVING COUNT(DISTINCT t.name) = ?
                 ORDER BY v.{order_by} {order_dir}
             """
+            params.append(len(tags))
         else:
             query = f"SELECT * FROM videos"
             if conditions:
@@ -803,7 +868,7 @@ class VideoDatabase:
                 source_file=source_file or video.source_file,
                 source_date=video.source_date
             )
-            self.add_video(record)
+            self._merge_video(record)
             count += 1
 
         # Record import in history
@@ -839,7 +904,7 @@ class VideoDatabase:
                 source_file=source_name,
                 analysis_status="none",
             )
-            self.add_video(record)
+            self._merge_video(record)
             count += 1
 
         # Record import in history

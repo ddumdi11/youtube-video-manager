@@ -218,16 +218,26 @@ class YTExtractorGUI:
         self.log_text.delete(1.0, tk.END)
         self.log_text.config(state=tk.DISABLED)
 
+        # Read tkinter vars in main thread before passing to background thread
+        opts = {
+            "output_dir": self.output_dir.get(),
+            "download_thumbs": self.download_thumbs.get(),
+            "generate_html": self.generate_html.get(),
+            "open_html": self.open_html.get(),
+            "export_csv": self.export_csv.get(),
+            "export_json": self.export_json.get(),
+        }
+
         # Run extraction in background thread
-        thread = Thread(target=self._run_extraction, daemon=True)
+        thread = Thread(target=self._run_extraction, args=(opts,), daemon=True)
         thread.start()
 
-    def _run_extraction(self):
+    def _run_extraction(self, opts: dict):
         """Run the extraction process."""
         try:
-            output_dir = Path(self.output_dir.get())
+            output_dir = Path(opts["output_dir"])
             output_dir.mkdir(parents=True, exist_ok=True)
-            thumb_dir = output_dir / "thumbnails" if self.download_thumbs.get() else None
+            thumb_dir = output_dir / "thumbnails" if opts["download_thumbs"] else None
 
             all_videos: list[VideoData] = []
             total_files = len(self.input_files)
@@ -240,13 +250,13 @@ class YTExtractorGUI:
 
                 try:
                     html_content = input_file.read_text(encoding='utf-8')
-                    videos, page_type, channel = extract_videos(html_content, input_file)
+                    videos, _, _ = extract_videos(html_content, input_file)
 
                     if videos:
                         self.root.after(0, lambda n=len(videos): self._log(f"  → {n} Videos gefunden"))
 
                         # Download thumbnails if requested
-                        if self.download_thumbs.get() and thumb_dir:
+                        if opts["download_thumbs"] and thumb_dir:
                             for video in videos:
                                 if video.thumbnail_url:
                                     local_path = download_thumbnail(
@@ -266,22 +276,22 @@ class YTExtractorGUI:
                 self.root.after(0, lambda: self._update_status("Erstelle Ausgabe-Dateien..."))
 
                 # HTML Report
-                if self.generate_html.get():
+                if opts["generate_html"]:
                     report_path = output_dir / "report.html"
                     generate_html_report(all_videos, report_path, "YouTube Video Report", thumb_dir)
                     self.root.after(0, lambda: self._log(f"HTML-Report erstellt: {report_path}"))
 
-                    if self.open_html.get():
+                    if opts["open_html"]:
                         self.root.after(0, lambda p=report_path: webbrowser.open(p.as_uri()))
 
                 # CSV Export
-                if self.export_csv.get():
+                if opts["export_csv"]:
                     csv_path = output_dir / "videos.csv"
                     output_csv(all_videos, str(csv_path))
                     self.root.after(0, lambda: self._log(f"CSV exportiert: {csv_path}"))
 
                 # JSON Export
-                if self.export_json.get():
+                if opts["export_json"]:
                     json_path = output_dir / "videos.json"
                     output_json(all_videos, "multiple files", "mixed", str(json_path), pretty=True)
                     self.root.after(0, lambda: self._log(f"JSON exportiert: {json_path}"))
@@ -306,7 +316,7 @@ class YTExtractorGUI:
 def main():
     """Run the GUI application."""
     root = tk.Tk()
-    app = YTExtractorGUI(root)
+    YTExtractorGUI(root)
     root.mainloop()
 
 

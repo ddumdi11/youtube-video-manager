@@ -986,7 +986,11 @@ class VideoManagerApp(tk.Tk):
             return
 
         def do_fetch():
-            from transcript_service import get_transcript
+            try:
+                from transcript_service import get_transcript
+            except ImportError as e:
+                self.after(0, lambda e=e: messagebox.showerror("Import-Fehler", str(e)))
+                return
 
             success = 0
             errors = 0
@@ -994,11 +998,16 @@ class VideoManagerApp(tk.Tk):
                 self.after(0, lambda i=i: self.status_var.set(
                     f"Transkript {i+1}/{len(videos)}: {video.title[:40]}..."))
 
-                result = get_transcript(video.video_id)
-                if result:
-                    self.db.update_transcript(video.video_id, result.text, result.language)
-                    success += 1
-                else:
+                try:
+                    result = get_transcript(video.video_id)
+                    if result:
+                        self.db.update_transcript(video.video_id, result.text, result.language)
+                        success += 1
+                    else:
+                        self.db.update_analysis_status(video.video_id, "error")
+                        errors += 1
+                except Exception as e:
+                    logger.error(f"Transkript-Fehler fuer {video.video_id}: {e}")
                     self.db.update_analysis_status(video.video_id, "error")
                     errors += 1
 
@@ -1036,14 +1045,19 @@ class VideoManagerApp(tk.Tk):
                 self.after(0, lambda i=i: self.status_var.set(
                     f"Analyse {i+1}/{len(videos)}: {video.title[:40]}..."))
 
-                result = analyzer.summarize_transcript(
-                    video.transcript_text, title=video.title, channel=video.channel)
+                try:
+                    result = analyzer.summarize_transcript(
+                        video.transcript_text, title=video.title, channel=video.channel)
 
-                if result:
-                    themes_json = json.dumps(result.themes, ensure_ascii=False)
-                    self.db.update_summary(video.video_id, result.summary, themes_json)
-                    success += 1
-                else:
+                    if result:
+                        themes_json = json.dumps(result.themes, ensure_ascii=False)
+                        self.db.update_summary(video.video_id, result.summary, themes_json)
+                        success += 1
+                    else:
+                        self.db.update_analysis_status(video.video_id, "error")
+                        errors += 1
+                except Exception as e:
+                    logger.error(f"Analyse-Fehler fuer {video.video_id}: {e}")
                     self.db.update_analysis_status(video.video_id, "error")
                     errors += 1
 
@@ -1074,27 +1088,32 @@ class VideoManagerApp(tk.Tk):
                 return
 
             success = 0
+            errors = 0
             for i, video in enumerate(videos):
                 self.after(0, lambda i=i: self.status_var.set(
                     f"Claims {i+1}/{len(videos)}: {video.title[:40]}..."))
 
-                claims = analyzer.extract_claims(
-                    video.transcript_text, title=video.title,
-                    channel=video.channel, source_url=video.url)
+                try:
+                    claims = analyzer.extract_claims(
+                        video.transcript_text, title=video.title,
+                        channel=video.channel, source_url=video.url)
 
-                if claims:
-                    claims_json = json.dumps(
-                        [{"speaker": c.speaker, "topic": c.topic,
-                          "quote_text": c.quote_text, "stance": c.stance,
-                          "context_note": c.context_note, "source_url": c.source_url}
-                         for c in claims],
-                        ensure_ascii=False,
-                    )
-                    self.db.update_claims(video.video_id, claims_json)
-                    success += 1
+                    if claims:
+                        claims_json = json.dumps(
+                            [{"speaker": c.speaker, "topic": c.topic,
+                              "quote_text": c.quote_text, "stance": c.stance,
+                              "context_note": c.context_note, "source_url": c.source_url}
+                             for c in claims],
+                            ensure_ascii=False,
+                        )
+                        self.db.update_claims(video.video_id, claims_json)
+                        success += 1
+                except Exception as e:
+                    logger.error(f"Claim-Fehler fuer {video.video_id}: {e}")
+                    errors += 1
 
             self.after(0, lambda: self._on_batch_complete(
-                f"Claims: {success} Videos verarbeitet"))
+                f"Claims: {success} erfolgreich, {errors} fehlgeschlagen"))
 
         threading.Thread(target=do_extract, daemon=True).start()
 
@@ -1112,31 +1131,40 @@ class VideoManagerApp(tk.Tk):
             return
 
         def do_update():
-            from metadata_service import get_video_metadata, format_duration
+            try:
+                from metadata_service import get_video_metadata, format_duration
+            except ImportError as e:
+                self.after(0, lambda e=e: messagebox.showerror("Import-Fehler", str(e)))
+                return
 
             success = 0
+            errors = 0
             for i, video in enumerate(videos):
                 self.after(0, lambda i=i: self.status_var.set(
                     f"Metadaten {i+1}/{len(videos)}: {video.video_id}..."))
 
-                meta = get_video_metadata(video.video_id)
-                if meta:
-                    video.title = meta.title
-                    video.channel = meta.channel
-                    if meta.published_date:
-                        video.published_date = meta.published_date
-                    if meta.duration_seconds:
-                        video.duration = format_duration(meta.duration_seconds)
-                    if meta.view_count:
-                        video.views = f"{meta.view_count:,} views"
-                        video.views_count = meta.view_count
-                    if meta.thumbnail_url:
-                        video.thumbnail_url = meta.thumbnail_url
-                    self.db.add_video(video)
-                    success += 1
+                try:
+                    meta = get_video_metadata(video.video_id)
+                    if meta:
+                        video.title = meta.title
+                        video.channel = meta.channel
+                        if meta.published_date:
+                            video.published_date = meta.published_date
+                        if meta.duration_seconds:
+                            video.duration = format_duration(meta.duration_seconds)
+                        if meta.view_count:
+                            video.views = f"{meta.view_count:,} views"
+                            video.views_count = meta.view_count
+                        if meta.thumbnail_url:
+                            video.thumbnail_url = meta.thumbnail_url
+                        self.db.add_video(video)
+                        success += 1
+                except Exception as e:
+                    logger.error(f"Metadaten-Fehler fuer {video.video_id}: {e}")
+                    errors += 1
 
             self.after(0, lambda: self._on_batch_complete(
-                f"Metadaten: {success} Videos aktualisiert"))
+                f"Metadaten: {success} erfolgreich, {errors} fehlgeschlagen"))
 
         threading.Thread(target=do_update, daemon=True).start()
 
