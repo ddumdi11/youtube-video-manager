@@ -677,22 +677,28 @@ class VideoManagerApp(tk.Tk):
 
     CARDS_PER_ROW = 3
     CARD_PADDING = 10
+    VIDEOS_PER_PAGE = 48
 
     def __init__(self, db_path: str = "yt_videos.db"):
         super().__init__()
 
         self.title("YouTube Video Manager")
         self.geometry("1200x800")
+        self.minsize(800, 600)
 
         self.db = get_database(db_path)
         self.thumbnail_cache = ThumbnailCache()
         self.current_videos: List[VideoRecord] = []
         self.card_widgets: List[VideoCard] = []
         self._shutting_down = False
+        self._current_page = 0
 
         self._setup_styles()
         self._create_menu()
         self._create_widgets()
+
+        # Ensure window is fully rendered before loading data
+        self.update_idletasks()
         self._load_videos()
 
     def _setup_styles(self):
@@ -824,6 +830,14 @@ class VideoManagerApp(tk.Tk):
         self.count_label = ttk.Label(filter_frame, text="0 videos", style="Filter.TLabel")
         self.count_label.pack(side=tk.RIGHT)
 
+        # Pagination controls (right-aligned, before count label)
+        self.next_btn = ttk.Button(filter_frame, text=">", width=3, command=self._next_page)
+        self.next_btn.pack(side=tk.RIGHT, padx=2)
+        self.page_label = ttk.Label(filter_frame, text="1/1", style="Filter.TLabel")
+        self.page_label.pack(side=tk.RIGHT, padx=5)
+        self.prev_btn = ttk.Button(filter_frame, text="<", width=3, command=self._prev_page)
+        self.prev_btn.pack(side=tk.RIGHT, padx=2)
+
         # Main content
         content_frame = ttk.Frame(self)
         content_frame.pack(fill=tk.BOTH, expand=True)
@@ -889,16 +903,45 @@ class VideoManagerApp(tk.Tk):
             card.destroy()
         self.card_widgets.clear()
 
-        for i, video in enumerate(self.current_videos):
+        total = len(self.current_videos)
+        total_pages = max(1, (total + self.VIDEOS_PER_PAGE - 1) // self.VIDEOS_PER_PAGE)
+
+        # Clamp current page
+        if self._current_page >= total_pages:
+            self._current_page = total_pages - 1
+        if self._current_page < 0:
+            self._current_page = 0
+
+        start = self._current_page * self.VIDEOS_PER_PAGE
+        end = min(start + self.VIDEOS_PER_PAGE, total)
+        page_videos = self.current_videos[start:end]
+
+        for i, video in enumerate(page_videos):
             row = i // self.CARDS_PER_ROW
             col = i % self.CARDS_PER_ROW
             card = VideoCard(self.cards_frame, video, self._on_video_click, self.thumbnail_cache)
             card.grid(row=row, column=col, padx=self.CARD_PADDING, pady=self.CARD_PADDING)
             self.card_widgets.append(card)
 
-        self.count_label.configure(text=f"{len(self.current_videos)} videos")
+        # Update pagination controls
+        self.count_label.configure(text=f"{total} videos")
+        self.page_label.configure(text=f"{self._current_page + 1}/{total_pages}")
+        self.prev_btn.configure(state=tk.NORMAL if self._current_page > 0 else tk.DISABLED)
+        self.next_btn.configure(state=tk.NORMAL if self._current_page < total_pages - 1 else tk.DISABLED)
+
+        # Scroll to top
+        self.canvas.yview_moveto(0)
+
+    def _next_page(self):
+        self._current_page += 1
+        self._display_videos()
+
+    def _prev_page(self):
+        self._current_page -= 1
+        self._display_videos()
 
     def _on_filter_change(self):
+        self._current_page = 0
         self._load_videos()
 
     def _on_video_click(self, video: VideoRecord):
