@@ -334,19 +334,24 @@ def generate_html_report(
         # Get published_date for sorting (use source_date as fallback for display)
         published_date = video.published_date or ""
 
-        # Generate live badge HTML
+        # Derive canonical live state from booleans and live_badge
+        live_state = ""
         live_badge_html = ""
         if video.is_live:
+            live_state = "LIVE"
             live_badge_html = '<span class="live-badge live">🔴 LIVE</span>'
         elif video.is_premiere:
+            live_state = "PREMIERE"
             live_badge_html = '<span class="live-badge premiere">🎬 PREMIERE</span>'
         elif video.is_upcoming:
+            live_state = "UPCOMING"
             live_badge_html = '<span class="live-badge upcoming">⏳ GEPLANT</span>'
         elif video.live_badge == "UNKNOWN":
+            live_state = "UNKNOWN"
             live_badge_html = '<span class="live-badge unknown">?</span>'
 
         html_content += f"""
-        <div class="video-card" data-type="{video.video_type}" data-views="{video.views_count or 0}" data-title="{title_escaped.lower()}" data-date="{published_date}" data-live="{video.live_badge or ''}">
+        <div class="video-card" data-type="{video.video_type}" data-views="{video.views_count or 0}" data-title="{title_escaped.lower()}" data-date="{published_date}" data-live="{live_state}">
             <div class="thumbnail-container">
                 <a href="{video.url}" target="_blank">
                     <img src="{thumb_src}" alt="{title_escaped}" loading="lazy"

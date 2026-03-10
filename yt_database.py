@@ -9,6 +9,7 @@ Provides persistent storage for extracted video data with support for:
 
 import sqlite3
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -95,12 +96,13 @@ class VideoDatabase:
         """
         self.db_path = Path(db_path)
         self.conn: Optional[sqlite3.Connection] = None
+        self._lock = threading.Lock()
         self._connect()
         self._init_schema()
 
     def _connect(self):
         """Establish database connection."""
-        self.conn = sqlite3.connect(self.db_path)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         # Enable foreign keys
         self.conn.execute("PRAGMA foreign_keys = ON")
@@ -266,6 +268,11 @@ class VideoDatabase:
         Returns:
             Database ID of the video
         """
+        with self._lock:
+            return self._add_video_unlocked(video)
+
+    def _add_video_unlocked(self, video: VideoRecord) -> int:
+        """Internal add_video without lock (caller must hold self._lock)."""
         now = datetime.now().isoformat()
         cursor = self.conn.cursor()
 
@@ -351,54 +358,65 @@ class VideoDatabase:
         logger.debug(f"Updated video: {video.video_id}")
         return video.id
 
+    @staticmethod
+    def _is_placeholder_title(title: str, video_id: str) -> bool:
+        """Check if a title is a placeholder like 'Video abc123'."""
+        return title.startswith("Video ") and title[6:] == video_id
+
     def _merge_video(self, video: VideoRecord) -> int:
         """Merge-update: only update metadata fields, preserve user annotations and analysis data."""
         now = datetime.now().isoformat()
-        cursor = self.conn.cursor()
 
-        cursor.execute("SELECT id, first_seen FROM videos WHERE video_id = ?",
-                      (video.video_id,))
-        existing = cursor.fetchone()
+        with self._lock:
+            cursor = self.conn.cursor()
 
-        if not existing:
-            # New video, just insert
-            video.first_seen = now
-            video.last_updated = now
-            return self.add_video(video)
+            cursor.execute("SELECT id, first_seen FROM videos WHERE video_id = ?",
+                          (video.video_id,))
+            existing = cursor.fetchone()
 
-        # Only update metadata fields, preserve everything else
-        cursor.execute("""
-            UPDATE videos SET
-                title = COALESCE(?, title),
-                channel = COALESCE(?, channel),
-                views = COALESCE(?, views),
-                views_count = COALESCE(?, views_count),
-                published = COALESCE(?, published),
-                published_date = COALESCE(?, published_date),
-                duration = COALESCE(?, duration),
-                url = COALESCE(?, url),
-                video_type = COALESCE(?, video_type),
-                thumbnail_url = COALESCE(?, thumbnail_url),
-                thumbnail_local = COALESCE(?, thumbnail_local),
-                is_live = ?, is_premiere = ?, is_upcoming = ?,
-                live_badge = COALESCE(?, live_badge),
-                source_file = COALESCE(?, source_file),
-                source_date = COALESCE(?, source_date),
-                import_group = COALESCE(?, import_group),
-                last_updated = ?
-            WHERE video_id = ?
-        """, (
-            video.title, video.channel, video.views, video.views_count,
-            video.published, video.published_date, video.duration, video.url,
-            video.video_type, video.thumbnail_url, video.thumbnail_local,
-            int(video.is_live), int(video.is_premiere), int(video.is_upcoming),
-            video.live_badge, video.source_file, video.source_date,
-            video.import_group, now, video.video_id,
-        ))
+            if not existing:
+                # New video, just insert
+                video.first_seen = now
+                video.last_updated = now
+                return self._add_video_unlocked(video)
 
-        self.conn.commit()
-        logger.debug(f"Merge-updated video: {video.video_id}")
-        return existing["id"]
+            # Normalize placeholders to None so COALESCE won't overwrite real data
+            title = None if self._is_placeholder_title(video.title, video.video_id) else video.title
+            video_type = None if video.video_type == "video" else video.video_type
+
+            # Only update metadata fields, preserve everything else
+            cursor.execute("""
+                UPDATE videos SET
+                    title = COALESCE(?, title),
+                    channel = COALESCE(?, channel),
+                    views = COALESCE(?, views),
+                    views_count = COALESCE(?, views_count),
+                    published = COALESCE(?, published),
+                    published_date = COALESCE(?, published_date),
+                    duration = COALESCE(?, duration),
+                    url = COALESCE(?, url),
+                    video_type = COALESCE(?, video_type),
+                    thumbnail_url = COALESCE(?, thumbnail_url),
+                    thumbnail_local = COALESCE(?, thumbnail_local),
+                    is_live = ?, is_premiere = ?, is_upcoming = ?,
+                    live_badge = COALESCE(?, live_badge),
+                    source_file = COALESCE(?, source_file),
+                    source_date = COALESCE(?, source_date),
+                    import_group = COALESCE(?, import_group),
+                    last_updated = ?
+                WHERE video_id = ?
+            """, (
+                title, video.channel, video.views, video.views_count,
+                video.published, video.published_date, video.duration, video.url,
+                video_type, video.thumbnail_url, video.thumbnail_local,
+                int(video.is_live), int(video.is_premiere), int(video.is_upcoming),
+                video.live_badge, video.source_file, video.source_date,
+                video.import_group, now, video.video_id,
+            ))
+
+            self.conn.commit()
+            logger.debug(f"Merge-updated video: {video.video_id}")
+            return existing["id"]
 
     def get_video(self, video_id: str) -> Optional[VideoRecord]:
         """
@@ -572,16 +590,18 @@ class VideoDatabase:
             limit: Maximum number of results
         """
         order_by = self._validate_order_by(order_by)
-        cursor = self.conn.cursor()
 
-        order_dir = "DESC" if descending else "ASC"
-        query = f"SELECT * FROM videos ORDER BY {order_by} {order_dir}"
+        with self._lock:
+            cursor = self.conn.cursor()
 
-        if limit:
-            query += f" LIMIT {limit}"
+            order_dir = "DESC" if descending else "ASC"
+            query = f"SELECT * FROM videos ORDER BY {order_by} {order_dir}"
 
-        cursor.execute(query)
-        return [self._row_to_record(row) for row in cursor.fetchall()]
+            if limit:
+                query += f" LIMIT {limit}"
+
+            cursor.execute(query)
+            return [self._row_to_record(row) for row in cursor.fetchall()]
 
     def search_videos(self,
                       search_text: str = None,
@@ -734,55 +754,59 @@ class VideoDatabase:
     def update_transcript(self, video_id: str, transcript_text: str,
                          transcript_language: str) -> bool:
         """Update transcript for a video."""
-        cursor = self.conn.cursor()
-        now = datetime.now().isoformat()
-        cursor.execute("""
-            UPDATE videos SET
-                transcript_text = ?, transcript_language = ?,
-                analysis_status = CASE
-                    WHEN analysis_status = 'none' THEN 'transcript'
-                    ELSE analysis_status
-                END,
-                last_updated = ?
-            WHERE video_id = ?
-        """, (transcript_text, transcript_language, now, video_id))
-        self.conn.commit()
-        return cursor.rowcount > 0
+        with self._lock:
+            cursor = self.conn.cursor()
+            now = datetime.now().isoformat()
+            cursor.execute("""
+                UPDATE videos SET
+                    transcript_text = ?, transcript_language = ?,
+                    analysis_status = CASE
+                        WHEN analysis_status = 'none' THEN 'transcript'
+                        ELSE analysis_status
+                    END,
+                    last_updated = ?
+                WHERE video_id = ?
+            """, (transcript_text, transcript_language, now, video_id))
+            self.conn.commit()
+            return cursor.rowcount > 0
 
     def update_summary(self, video_id: str, summary: str, themes: str) -> bool:
         """Update summary and themes for a video."""
-        cursor = self.conn.cursor()
-        now = datetime.now().isoformat()
-        cursor.execute("""
-            UPDATE videos SET
-                summary = ?, themes = ?, analysis_status = 'analyzed',
-                last_updated = ?
-            WHERE video_id = ?
-        """, (summary, themes, now, video_id))
-        self.conn.commit()
-        return cursor.rowcount > 0
+        with self._lock:
+            cursor = self.conn.cursor()
+            now = datetime.now().isoformat()
+            cursor.execute("""
+                UPDATE videos SET
+                    summary = ?, themes = ?, analysis_status = 'analyzed',
+                    last_updated = ?
+                WHERE video_id = ?
+            """, (summary, themes, now, video_id))
+            self.conn.commit()
+            return cursor.rowcount > 0
 
     def update_claims(self, video_id: str, claims_json: str) -> bool:
         """Update extracted claims for a video."""
-        cursor = self.conn.cursor()
-        now = datetime.now().isoformat()
-        cursor.execute("""
-            UPDATE videos SET claims = ?, last_updated = ?
-            WHERE video_id = ?
-        """, (claims_json, now, video_id))
-        self.conn.commit()
-        return cursor.rowcount > 0
+        with self._lock:
+            cursor = self.conn.cursor()
+            now = datetime.now().isoformat()
+            cursor.execute("""
+                UPDATE videos SET claims = ?, last_updated = ?
+                WHERE video_id = ?
+            """, (claims_json, now, video_id))
+            self.conn.commit()
+            return cursor.rowcount > 0
 
     def update_analysis_status(self, video_id: str, status: str) -> bool:
         """Update analysis status for a video."""
-        cursor = self.conn.cursor()
-        now = datetime.now().isoformat()
-        cursor.execute("""
-            UPDATE videos SET analysis_status = ?, last_updated = ?
-            WHERE video_id = ?
-        """, (status, now, video_id))
-        self.conn.commit()
-        return cursor.rowcount > 0
+        with self._lock:
+            cursor = self.conn.cursor()
+            now = datetime.now().isoformat()
+            cursor.execute("""
+                UPDATE videos SET analysis_status = ?, last_updated = ?
+                WHERE video_id = ?
+            """, (status, now, video_id))
+            self.conn.commit()
+            return cursor.rowcount > 0
 
     def get_videos_by_status(self, status: str) -> List[VideoRecord]:
         """Get all videos with a specific analysis status."""
@@ -803,33 +827,36 @@ class VideoDatabase:
 
     def add_chat_message(self, role: str, content: str) -> int:
         """Add a chat message to history."""
-        cursor = self.conn.cursor()
-        now = datetime.now().isoformat()
-        cursor.execute(
-            "INSERT INTO chat_history (role, content, created_at) VALUES (?, ?, ?)",
-            (role, content, now),
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+        with self._lock:
+            cursor = self.conn.cursor()
+            now = datetime.now().isoformat()
+            cursor.execute(
+                "INSERT INTO chat_history (role, content, created_at) VALUES (?, ?, ?)",
+                (role, content, now),
+            )
+            self.conn.commit()
+            return cursor.lastrowid
 
     def get_chat_history(self, limit: int = 50) -> List[Dict]:
         """Get recent chat history."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM chat_history ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        )
-        rows = [dict(row) for row in cursor.fetchall()]
-        rows.reverse()  # Oldest first
-        return rows
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT * FROM chat_history ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+            rows = [dict(row) for row in cursor.fetchall()]
+            rows.reverse()  # Oldest first
+            return rows
 
     def clear_chat_history(self) -> int:
         """Clear all chat history. Returns number of deleted messages."""
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM chat_history")
-        count = cursor.rowcount
-        self.conn.commit()
-        return count
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM chat_history")
+            count = cursor.rowcount
+            self.conn.commit()
+            return count
 
     # =========================================================================
     # Import Operations

@@ -228,11 +228,14 @@ class YTExtractorGUI:
             "export_json": self.export_json.get(),
         }
 
+        # Snapshot mutable file list before passing to background thread
+        files_snapshot = list(self.input_files)
+
         # Run extraction in background thread
-        thread = Thread(target=self._run_extraction, args=(opts,), daemon=True)
+        thread = Thread(target=self._run_extraction, args=(opts, files_snapshot), daemon=True)
         thread.start()
 
-    def _run_extraction(self, opts: dict):
+    def _run_extraction(self, opts: dict, files: list[Path]):
         """Run the extraction process."""
         try:
             output_dir = Path(opts["output_dir"])
@@ -240,9 +243,9 @@ class YTExtractorGUI:
             thumb_dir = output_dir / "thumbnails" if opts["download_thumbs"] else None
 
             all_videos: list[VideoData] = []
-            total_files = len(self.input_files)
+            total_files = len(files)
 
-            for i, input_file in enumerate(self.input_files):
+            for i, input_file in enumerate(files):
                 progress = (i / total_files) * 100
                 self.root.after(0, lambda p=progress: self.progress_var.set(p))
                 self.root.after(0, lambda f=input_file.name: self._update_status(f"Verarbeite: {f}"))

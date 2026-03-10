@@ -200,14 +200,19 @@ class VideoCard(ttk.Frame):
                     image = Image.open(io.BytesIO(data))
 
                 if image:
-                    image = image.resize((self.THUMB_WIDTH, self.THUMB_HEIGHT), Image.Resampling.LANCZOS)
-                    photo = ImageTk.PhotoImage(image)
-                    self.after(0, lambda: self._set_thumbnail(photo))
+                    # Resize in background, but create PhotoImage on main thread
+                    resized = image.resize((self.THUMB_WIDTH, self.THUMB_HEIGHT), Image.Resampling.LANCZOS)
+                    self.after(0, lambda img=resized: self._set_thumbnail_from_pil(img))
             except Exception as e:
                 logger.debug(f"Failed to load thumbnail for {self.video.video_id}: {e}")
                 self.after(0, self._set_placeholder)
 
         threading.Thread(target=load, daemon=True).start()
+
+    def _set_thumbnail_from_pil(self, pil_image: Image.Image):
+        """Create PhotoImage on main thread and set it."""
+        photo = ImageTk.PhotoImage(pil_image)
+        self._set_thumbnail(photo)
 
     def _set_thumbnail(self, photo: ImageTk.PhotoImage):
         self.photo_image = photo
@@ -255,7 +260,9 @@ class VideoEditDialog(tk.Toplevel):
         main_frame = ttk.Frame(canvas, padding=10)
         canvas.create_window((0, 0), window=main_frame, anchor=tk.NW)
         main_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+        # Scope mousewheel to this canvas only (not bind_all which leaks globally)
+        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+        main_frame.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
         # Title
         ttk.Label(main_frame, text="Title:", font=("", 10, "bold")).pack(anchor=tk.W)
@@ -608,14 +615,16 @@ class ChatDialog(tk.Toplevel):
                 answer = self.analyzer.chat(question, context, self.chat_messages[:-1])
 
                 if answer:
-                    self.after(0, lambda: self._show_response(answer))
+                    self.after(0, lambda a=answer: self._show_response(a))
                 else:
                     self.after(0, lambda: self._show_response("Fehler: Keine Antwort erhalten."))
 
             except ValueError as e:
-                self.after(0, lambda: self._show_response(f"API-Fehler: {e}"))
+                e_msg = str(e)
+                self.after(0, lambda m=e_msg: self._show_response(f"API-Fehler: {m}"))
             except Exception as e:
-                self.after(0, lambda: self._show_response(f"Fehler: {e}"))
+                e_msg = str(e)
+                self.after(0, lambda m=e_msg: self._show_response(f"Fehler: {m}"))
 
         threading.Thread(target=do_chat, daemon=True).start()
 
@@ -995,8 +1004,9 @@ class VideoManagerApp(tk.Tk):
             success = 0
             errors = 0
             for i, video in enumerate(videos):
-                self.after(0, lambda i=i: self.status_var.set(
-                    f"Transkript {i+1}/{len(videos)}: {video.title[:40]}..."))
+                title_short = video.title[:40]
+                self.after(0, lambda i=i, t=title_short: self.status_var.set(
+                    f"Transkript {i+1}/{len(videos)}: {t}..."))
 
                 try:
                     result = get_transcript(video.video_id)
@@ -1036,14 +1046,16 @@ class VideoManagerApp(tk.Tk):
                 from llm_analyzer import LLMAnalyzer
                 analyzer = LLMAnalyzer()
             except ValueError as e:
-                self.after(0, lambda: messagebox.showerror("API-Fehler", str(e)))
+                e_msg = str(e)
+                self.after(0, lambda e_msg=e_msg: messagebox.showerror("API-Fehler", e_msg))
                 return
 
             success = 0
             errors = 0
             for i, video in enumerate(videos):
-                self.after(0, lambda i=i: self.status_var.set(
-                    f"Analyse {i+1}/{len(videos)}: {video.title[:40]}..."))
+                title_short = video.title[:40]
+                self.after(0, lambda i=i, t=title_short: self.status_var.set(
+                    f"Analyse {i+1}/{len(videos)}: {t}..."))
 
                 try:
                     result = analyzer.summarize_transcript(
@@ -1084,14 +1096,16 @@ class VideoManagerApp(tk.Tk):
                 from llm_analyzer import LLMAnalyzer
                 analyzer = LLMAnalyzer()
             except ValueError as e:
-                self.after(0, lambda: messagebox.showerror("API-Fehler", str(e)))
+                e_msg = str(e)
+                self.after(0, lambda e_msg=e_msg: messagebox.showerror("API-Fehler", e_msg))
                 return
 
             success = 0
             errors = 0
             for i, video in enumerate(videos):
-                self.after(0, lambda i=i: self.status_var.set(
-                    f"Claims {i+1}/{len(videos)}: {video.title[:40]}..."))
+                title_short = video.title[:40]
+                self.after(0, lambda i=i, t=title_short: self.status_var.set(
+                    f"Claims {i+1}/{len(videos)}: {t}..."))
 
                 try:
                     claims = analyzer.extract_claims(
@@ -1108,6 +1122,9 @@ class VideoManagerApp(tk.Tk):
                         )
                         self.db.update_claims(video.video_id, claims_json)
                         success += 1
+                    else:
+                        self.db.update_claims(video.video_id, "[]")
+                        errors += 1
                 except Exception as e:
                     logger.error(f"Claim-Fehler fuer {video.video_id}: {e}")
                     errors += 1
@@ -1140,8 +1157,9 @@ class VideoManagerApp(tk.Tk):
             success = 0
             errors = 0
             for i, video in enumerate(videos):
-                self.after(0, lambda i=i: self.status_var.set(
-                    f"Metadaten {i+1}/{len(videos)}: {video.video_id}..."))
+                vid = video.video_id
+                self.after(0, lambda i=i, v=vid: self.status_var.set(
+                    f"Metadaten {i+1}/{len(videos)}: {v}..."))
 
                 try:
                     meta = get_video_metadata(video.video_id)
