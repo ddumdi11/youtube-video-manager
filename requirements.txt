@@ -1,0 +1,18 @@
+# YouTube Video Manager - Dependencies
+
+# HTML Parsing
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
+# Desktop App (yt_app.py)
+Pillow>=12.1.1        # Thumbnail-Darstellung (>=12.1.1 fuer GHSA-cfh3-3jmp-rvhc)
+
+# Konfiguration
+python-dotenv>=1.0.0  # .env Dateien laden
+
+# Transkript & Metadaten
+youtube-transcript-api>=0.6.2   # YouTube-Transkripte abrufen
+yt-dlp>=2024.1.0               # Video-Metadaten via yt-dlp
+
+# KI-Analyse (Claude)
+anthropic>=0.40.0              # Claude API Client
