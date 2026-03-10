@@ -238,7 +238,7 @@ class YTExtractorGUI:
     def _run_extraction(self, opts: dict, files: list[Path]):
         """Run the extraction process."""
         try:
-            output_dir = Path(opts["output_dir"])
+            output_dir = Path(opts["output_dir"]).resolve()
             output_dir.mkdir(parents=True, exist_ok=True)
             thumb_dir = output_dir / "thumbnails" if opts["download_thumbs"] else None
 

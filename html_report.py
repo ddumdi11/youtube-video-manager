@@ -9,9 +9,26 @@ import html
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 # Import from main module
 from yt_extractor import VideoData
+
+# Allowed URL schemes for href/src attributes
+_SAFE_SCHEMES = frozenset({"http", "https", "data"})
+
+
+def _sanitize_url(url: str, fallback: str = "#") -> str:
+    """Sanitize a URL to only allow safe schemes (http, https, data)."""
+    if not url:
+        return fallback
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in _SAFE_SCHEMES:
+            return fallback
+    except Exception:
+        return fallback
+    return html.escape(url, quote=True)
 
 
 def generate_html_report(
@@ -307,13 +324,18 @@ def generate_html_report(
 
     # Generate video cards
     for video in videos:
-        # Determine thumbnail source
+        # Determine thumbnail source (sanitize URLs)
+        video_id_escaped = html.escape(video.video_id, quote=True)
+        fallback_thumb = f"https://i.ytimg.com/vi/{video_id_escaped}/mqdefault.jpg"
         if video.thumbnail_local:
-            thumb_src = str(thumb_base / f"{video.video_id}.jpg")
+            thumb_src = html.escape(str(thumb_base / f"{video.video_id}.jpg"), quote=True)
         elif video.thumbnail_url:
-            thumb_src = video.thumbnail_url
+            thumb_src = _sanitize_url(video.thumbnail_url, fallback=fallback_thumb)
         else:
-            thumb_src = f"https://i.ytimg.com/vi/{video.video_id}/mqdefault.jpg"
+            thumb_src = fallback_thumb
+
+        # Sanitize video URL
+        video_url = _sanitize_url(video.url, fallback=f"https://youtube.com/watch?v={video_id_escaped}")
 
         # Escape HTML in text fields
         title_escaped = html.escape(video.title or "Unbekannter Titel")
@@ -351,11 +373,11 @@ def generate_html_report(
             live_badge_html = '<span class="live-badge unknown">?</span>'
 
         html_content += f"""
-        <div class="video-card" data-type="{video.video_type}" data-views="{video.views_count or 0}" data-title="{title_escaped.lower()}" data-date="{published_date}" data-live="{live_state}">
+        <div class="video-card" data-type="{html.escape(video.video_type, quote=True)}" data-views="{video.views_count or 0}" data-title="{title_escaped.lower()}" data-date="{published_date}" data-live="{live_state}">
             <div class="thumbnail-container">
-                <a href="{video.url}" target="_blank">
+                <a href="{video_url}" target="_blank">
                     <img src="{thumb_src}" alt="{title_escaped}" loading="lazy"
-                         onerror="this.src='https://i.ytimg.com/vi/{video.video_id}/mqdefault.jpg'">
+                         onerror="this.src='{fallback_thumb}'">
                 </a>
                 {f'<span class="duration">{html.escape(video.duration)}</span>' if video.duration else ''}
                 {f'<span class="video-type">Short</span>' if video.video_type == "short" else ''}
@@ -363,7 +385,7 @@ def generate_html_report(
             </div>
             <div class="video-info">
                 <div class="video-title">
-                    <a href="{video.url}" target="_blank">{title_escaped}</a>
+                    <a href="{video_url}" target="_blank">{title_escaped}</a>
                 </div>
                 <div class="video-meta">
                     {f'<div class="channel">{channel_escaped}</div>' if channel_escaped else ''}

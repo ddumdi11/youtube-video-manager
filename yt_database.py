@@ -36,10 +36,10 @@ class VideoRecord:
     thumbnail_url: Optional[str] = None
     thumbnail_local: Optional[str] = None
 
-    # Live status
-    is_live: bool = False
-    is_premiere: bool = False
-    is_upcoming: bool = False
+    # Live status (None = unspecified, for merge semantics)
+    is_live: Optional[bool] = False
+    is_premiere: Optional[bool] = False
+    is_upcoming: Optional[bool] = False
     live_badge: Optional[str] = None
 
     # User annotations
@@ -244,9 +244,10 @@ class VideoDatabase:
 
     def close(self):
         """Close database connection."""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
+        with self._lock:
+            if self.conn:
+                self.conn.close()
+                self.conn = None
 
     def __enter__(self):
         return self
@@ -306,8 +307,8 @@ class VideoDatabase:
                 video.video_id, video.title, video.channel, video.views,
                 video.views_count, video.published, video.published_date,
                 video.duration, video.url, video.video_type, video.thumbnail_url,
-                video.thumbnail_local, int(video.is_live), int(video.is_premiere),
-                int(video.is_upcoming), video.live_badge, video.user_comment,
+                video.thumbnail_local, int(video.is_live or False), int(video.is_premiere or False),
+                int(video.is_upcoming or False), video.live_badge, video.user_comment,
                 video.user_rating, video.transcript_text, video.transcript_language,
                 video.summary, video.themes, video.claims, video.analysis_status,
                 video.import_group, video.source_file, video.source_date,
@@ -343,7 +344,7 @@ class VideoDatabase:
             video.title, video.channel, video.views, video.views_count,
             video.published, video.published_date, video.duration, video.url,
             video.video_type, video.thumbnail_url, video.thumbnail_local,
-            int(video.is_live), int(video.is_premiere), int(video.is_upcoming),
+            int(video.is_live or False), int(video.is_premiere or False), int(video.is_upcoming or False),
             video.live_badge, video.user_comment, video.user_rating,
             video.transcript_text, video.transcript_language, video.summary,
             video.themes, video.claims, video.analysis_status, video.import_group,
@@ -398,7 +399,9 @@ class VideoDatabase:
                     video_type = COALESCE(?, video_type),
                     thumbnail_url = COALESCE(?, thumbnail_url),
                     thumbnail_local = COALESCE(?, thumbnail_local),
-                    is_live = ?, is_premiere = ?, is_upcoming = ?,
+                    is_live = COALESCE(?, is_live),
+                    is_premiere = COALESCE(?, is_premiere),
+                    is_upcoming = COALESCE(?, is_upcoming),
                     live_badge = COALESCE(?, live_badge),
                     source_file = COALESCE(?, source_file),
                     source_date = COALESCE(?, source_date),
@@ -409,7 +412,9 @@ class VideoDatabase:
                 title, video.channel, video.views, video.views_count,
                 video.published, video.published_date, video.duration, video.url,
                 video_type, video.thumbnail_url, video.thumbnail_local,
-                int(video.is_live), int(video.is_premiere), int(video.is_upcoming),
+                int(video.is_live) if video.is_live is not None else None,
+                int(video.is_premiere) if video.is_premiere is not None else None,
+                int(video.is_upcoming) if video.is_upcoming is not None else None,
                 video.live_badge, video.source_file, video.source_date,
                 video.import_group, now, video.video_id,
             ))
@@ -428,23 +433,25 @@ class VideoDatabase:
         Returns:
             VideoRecord or None if not found
         """
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM videos WHERE video_id = ?", (video_id,))
-        row = cursor.fetchone()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM videos WHERE video_id = ?", (video_id,))
+            row = cursor.fetchone()
 
-        if row:
-            return self._row_to_record(row)
-        return None
+            if row:
+                return self._row_to_record(row)
+            return None
 
     def get_video_by_id(self, db_id: int) -> Optional[VideoRecord]:
         """Get video by database ID."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM videos WHERE id = ?", (db_id,))
-        row = cursor.fetchone()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM videos WHERE id = ?", (db_id,))
+            row = cursor.fetchone()
 
-        if row:
-            return self._row_to_record(row)
-        return None
+            if row:
+                return self._row_to_record(row)
+            return None
 
     def delete_video(self, video_id: str) -> bool:
         """
@@ -456,13 +463,14 @@ class VideoDatabase:
         Returns:
             True if deleted, False if not found
         """
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM videos WHERE video_id = ?", (video_id,))
-        self.conn.commit()
-        deleted = cursor.rowcount > 0
-        if deleted:
-            logger.debug(f"Deleted video: {video_id}")
-        return deleted
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM videos WHERE video_id = ?", (video_id,))
+            self.conn.commit()
+            deleted = cursor.rowcount > 0
+            if deleted:
+                logger.debug(f"Deleted video: {video_id}")
+            return deleted
 
     def _row_to_record(self, row: sqlite3.Row) -> VideoRecord:
         """Convert database row to VideoRecord."""
@@ -627,8 +635,6 @@ class VideoDatabase:
             order_by: Sort column
             descending: Sort direction
         """
-        cursor = self.conn.cursor()
-
         conditions = []
         params = []
 
@@ -688,64 +694,68 @@ class VideoDatabase:
                 query += " WHERE " + " AND ".join(conditions)
             query += f" ORDER BY {order_by} {order_dir}"
 
-        cursor.execute(query, params)
-        return [self._row_to_record(row) for row in cursor.fetchall()]
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(query, params)
+            return [self._row_to_record(row) for row in cursor.fetchall()]
 
     def get_channels(self) -> List[str]:
         """Get all unique channel names."""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT channel FROM videos
-            WHERE channel IS NOT NULL
-            ORDER BY channel
-        """)
-        return [row["channel"] for row in cursor.fetchall()]
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT channel FROM videos
+                WHERE channel IS NOT NULL
+                ORDER BY channel
+            """)
+            return [row["channel"] for row in cursor.fetchall()]
 
     def get_stats(self) -> Dict[str, Any]:
         """Get database statistics."""
-        cursor = self.conn.cursor()
+        with self._lock:
+            cursor = self.conn.cursor()
 
-        stats = {}
+            stats = {}
 
-        cursor.execute("SELECT COUNT(*) as count FROM videos")
-        stats["total_videos"] = cursor.fetchone()["count"]
+            cursor.execute("SELECT COUNT(*) as count FROM videos")
+            stats["total_videos"] = cursor.fetchone()["count"]
 
-        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE video_type = 'short'")
-        stats["shorts"] = cursor.fetchone()["count"]
+            cursor.execute("SELECT COUNT(*) as count FROM videos WHERE video_type = 'short'")
+            stats["shorts"] = cursor.fetchone()["count"]
 
-        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE video_type = 'video'")
-        stats["videos"] = cursor.fetchone()["count"]
+            cursor.execute("SELECT COUNT(*) as count FROM videos WHERE video_type = 'video'")
+            stats["videos"] = cursor.fetchone()["count"]
 
-        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE is_live = 1")
-        stats["live"] = cursor.fetchone()["count"]
+            cursor.execute("SELECT COUNT(*) as count FROM videos WHERE is_live = 1")
+            stats["live"] = cursor.fetchone()["count"]
 
-        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE user_rating IS NOT NULL")
-        stats["rated"] = cursor.fetchone()["count"]
+            cursor.execute("SELECT COUNT(*) as count FROM videos WHERE user_rating IS NOT NULL")
+            stats["rated"] = cursor.fetchone()["count"]
 
-        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE user_comment IS NOT NULL AND user_comment != ''")
-        stats["with_comments"] = cursor.fetchone()["count"]
+            cursor.execute("SELECT COUNT(*) as count FROM videos WHERE user_comment IS NOT NULL AND user_comment != ''")
+            stats["with_comments"] = cursor.fetchone()["count"]
 
-        cursor.execute("SELECT COUNT(DISTINCT channel) as count FROM videos")
-        stats["channels"] = cursor.fetchone()["count"]
+            cursor.execute("SELECT COUNT(DISTINCT channel) as count FROM videos")
+            stats["channels"] = cursor.fetchone()["count"]
 
-        cursor.execute("SELECT COUNT(*) as count FROM tags")
-        stats["tags"] = cursor.fetchone()["count"]
+            cursor.execute("SELECT COUNT(*) as count FROM tags")
+            stats["tags"] = cursor.fetchone()["count"]
 
-        # Analysis stats
-        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE transcript_text IS NOT NULL")
-        stats["with_transcript"] = cursor.fetchone()["count"]
+            # Analysis stats
+            cursor.execute("SELECT COUNT(*) as count FROM videos WHERE transcript_text IS NOT NULL")
+            stats["with_transcript"] = cursor.fetchone()["count"]
 
-        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE summary IS NOT NULL")
-        stats["with_summary"] = cursor.fetchone()["count"]
+            cursor.execute("SELECT COUNT(*) as count FROM videos WHERE summary IS NOT NULL")
+            stats["with_summary"] = cursor.fetchone()["count"]
 
-        cursor.execute("SELECT COUNT(*) as count FROM videos WHERE claims IS NOT NULL AND claims != '[]'")
-        stats["with_claims"] = cursor.fetchone()["count"]
+            cursor.execute("SELECT COUNT(*) as count FROM videos WHERE claims IS NOT NULL AND claims != '[]'")
+            stats["with_claims"] = cursor.fetchone()["count"]
 
-        for status in ("none", "transcript", "analyzed", "error"):
-            cursor.execute("SELECT COUNT(*) as count FROM videos WHERE analysis_status = ?", (status,))
-            stats[f"status_{status}"] = cursor.fetchone()["count"]
+            for status in ("none", "transcript", "analyzed", "error"):
+                cursor.execute("SELECT COUNT(*) as count FROM videos WHERE analysis_status = ?", (status,))
+                stats[f"status_{status}"] = cursor.fetchone()["count"]
 
-        return stats
+            return stats
 
     # =========================================================================
     # Analysis Operations
@@ -761,7 +771,7 @@ class VideoDatabase:
                 UPDATE videos SET
                     transcript_text = ?, transcript_language = ?,
                     analysis_status = CASE
-                        WHEN analysis_status = 'none' THEN 'transcript'
+                        WHEN analysis_status IN ('none', 'error') THEN 'transcript'
                         ELSE analysis_status
                     END,
                     last_updated = ?
@@ -810,16 +820,18 @@ class VideoDatabase:
 
     def get_videos_by_status(self, status: str) -> List[VideoRecord]:
         """Get all videos with a specific analysis status."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM videos WHERE analysis_status = ? ORDER BY last_updated DESC",
-                      (status,))
-        return [self._row_to_record(row) for row in cursor.fetchall()]
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM videos WHERE analysis_status = ? ORDER BY last_updated DESC",
+                          (status,))
+            return [self._row_to_record(row) for row in cursor.fetchall()]
 
     def get_analyzed_videos(self) -> List[VideoRecord]:
         """Get all videos that have been analyzed (have summary)."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM videos WHERE summary IS NOT NULL ORDER BY last_updated DESC")
-        return [self._row_to_record(row) for row in cursor.fetchall()]
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM videos WHERE summary IS NOT NULL ORDER BY last_updated DESC")
+            return [self._row_to_record(row) for row in cursor.fetchall()]
 
     # =========================================================================
     # Chat History Operations
@@ -900,12 +912,13 @@ class VideoDatabase:
 
         # Record import in history
         if source_file:
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                INSERT INTO import_history (filename, import_date, video_count, source_type)
-                VALUES (?, ?, ?, ?)
-            """, (source_file, datetime.now().isoformat(), count, "html"))
-            self.conn.commit()
+            with self._lock:
+                cursor = self.conn.cursor()
+                cursor.execute("""
+                    INSERT INTO import_history (filename, import_date, video_count, source_type)
+                    VALUES (?, ?, ?, ?)
+                """, (source_file, datetime.now().isoformat(), count, "html"))
+                self.conn.commit()
 
         logger.info(f"Imported {count} videos from {source_file}")
         return count
@@ -927,6 +940,9 @@ class VideoDatabase:
                 video_id=pv.youtube_id,
                 title=pv.title or f"Video {pv.youtube_id}",
                 url=pv.url,
+                is_live=None,
+                is_premiere=None,
+                is_upcoming=None,
                 import_group=pv.group,
                 source_file=source_name,
                 analysis_status="none",
@@ -935,23 +951,25 @@ class VideoDatabase:
             count += 1
 
         # Record import in history
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO import_history (filename, import_date, video_count, source_type)
-            VALUES (?, ?, ?, ?)
-        """, (source_name, datetime.now().isoformat(), count, "onetab"))
-        self.conn.commit()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT INTO import_history (filename, import_date, video_count, source_type)
+                VALUES (?, ?, ?, ?)
+            """, (source_name, datetime.now().isoformat(), count, "onetab"))
+            self.conn.commit()
 
         logger.info(f"Imported {count} videos from OneTab ({source_name})")
         return count
 
     def get_import_history(self) -> List[Dict]:
         """Get import history."""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT * FROM import_history ORDER BY import_date DESC
-        """)
-        return [dict(row) for row in cursor.fetchall()]
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT * FROM import_history ORDER BY import_date DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
 
 
 # Convenience function for quick database access

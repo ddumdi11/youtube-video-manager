@@ -5,7 +5,7 @@ beautifulsoup4>=4.12.0
 lxml>=5.0.0
 
 # Desktop App (yt_app.py)
-Pillow>=10.3.0        # Thumbnail-Darstellung (>=10.3.0 fuer Sicherheitsfixes)
+Pillow>=12.1.1        # Thumbnail-Darstellung (>=12.1.1 fuer GHSA-cfh3-3jmp-rvhc)
 
 # Konfiguration
 python-dotenv>=1.0.0  # .env Dateien laden

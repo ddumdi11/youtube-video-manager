@@ -16,9 +16,11 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 from PIL import Image, ImageTk
 import urllib.request
+import urllib.parse
 import io
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional, List, Dict, Callable
 import logging
@@ -75,6 +77,9 @@ class VideoCard(ttk.Frame):
 
     THUMB_WIDTH = 320
     THUMB_HEIGHT = 180
+
+    # Shared bounded executor for thumbnail loading (avoid unbounded thread creation)
+    _thumb_executor = ThreadPoolExecutor(max_workers=4)
 
     def __init__(self, parent, video: VideoRecord, on_click: Callable, thumbnail_cache: ThumbnailCache):
         super().__init__(parent, style="Card.TFrame")
@@ -195,19 +200,23 @@ class VideoCard(ttk.Frame):
                 if self.video.thumbnail_local and Path(self.video.thumbnail_local).exists():
                     image = Image.open(self.video.thumbnail_local)
                 elif self.video.thumbnail_url:
-                    with urllib.request.urlopen(self.video.thumbnail_url, timeout=5) as response:
-                        data = response.read()
-                    image = Image.open(io.BytesIO(data))
+                    # Validate URL scheme before fetching
+                    parsed = urllib.parse.urlparse(self.video.thumbnail_url)
+                    if parsed.scheme.lower() in ("http", "https"):
+                        with urllib.request.urlopen(self.video.thumbnail_url, timeout=5) as response:
+                            data = response.read()
+                        image = Image.open(io.BytesIO(data))
 
                 if image:
-                    # Resize in background, but create PhotoImage on main thread
                     resized = image.resize((self.THUMB_WIDTH, self.THUMB_HEIGHT), Image.Resampling.LANCZOS)
-                    self.after(0, lambda img=resized: self._set_thumbnail_from_pil(img))
+                    if self.winfo_exists():
+                        self.after(0, lambda img=resized: self._set_thumbnail_from_pil(img))
             except Exception as e:
                 logger.debug(f"Failed to load thumbnail for {self.video.video_id}: {e}")
-                self.after(0, self._set_placeholder)
+                if self.winfo_exists():
+                    self.after(0, self._set_placeholder)
 
-        threading.Thread(target=load, daemon=True).start()
+        self._thumb_executor.submit(load)
 
     def _set_thumbnail_from_pil(self, pil_image: Image.Image):
         """Create PhotoImage on main thread and set it."""
