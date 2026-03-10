@@ -385,6 +385,23 @@ class VideoDatabase:
             title = None if self._is_placeholder_title(video.title, video.video_id) else video.title
             video_type = None if video.video_type == "video" else video.video_type
 
+            # Normalize empty strings to None so COALESCE skips them
+            def _none_if_empty(val):
+                return None if val == "" else val
+
+            channel = _none_if_empty(video.channel)
+            views = _none_if_empty(video.views)
+            published = _none_if_empty(video.published)
+            published_date = _none_if_empty(video.published_date)
+            duration = _none_if_empty(video.duration)
+            url = _none_if_empty(video.url)
+            thumbnail_url = _none_if_empty(video.thumbnail_url)
+            thumbnail_local = _none_if_empty(video.thumbnail_local)
+            live_badge = _none_if_empty(video.live_badge)
+            source_file = _none_if_empty(video.source_file)
+            source_date = _none_if_empty(video.source_date)
+            import_group = _none_if_empty(video.import_group)
+
             # Only update metadata fields, preserve everything else
             cursor.execute("""
                 UPDATE videos SET
@@ -409,14 +426,14 @@ class VideoDatabase:
                     last_updated = ?
                 WHERE video_id = ?
             """, (
-                title, video.channel, video.views, video.views_count,
-                video.published, video.published_date, video.duration, video.url,
-                video_type, video.thumbnail_url, video.thumbnail_local,
+                title, channel, views, video.views_count,
+                published, published_date, duration, url,
+                video_type, thumbnail_url, thumbnail_local,
                 int(video.is_live) if video.is_live is not None else None,
                 int(video.is_premiere) if video.is_premiere is not None else None,
                 int(video.is_upcoming) if video.is_upcoming is not None else None,
-                video.live_badge, video.source_file, video.source_date,
-                video.import_group, now, video.video_id,
+                live_badge, source_file, source_date,
+                import_group, now, video.video_id,
             ))
 
             self.conn.commit()
@@ -554,26 +571,36 @@ class VideoDatabase:
 
     def get_all_tags(self) -> List[str]:
         """Get all unique tags in database."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT name FROM tags ORDER BY name")
-        return [row["name"] for row in cursor.fetchall()]
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT name FROM tags ORDER BY name")
+            return [row["name"] for row in cursor.fetchall()]
 
     def add_tag_to_video(self, video_id: str, tag: str):
         """Add a single tag to a video."""
-        video = self.get_video(video_id)
-        if video:
-            if tag.lower() not in [t.lower() for t in video.user_tags]:
-                video.user_tags.append(tag.strip().lower())
-                self._set_video_tags(video.id, video.user_tags)
-                self.conn.commit()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM videos WHERE video_id = ?", (video_id,))
+            row = cursor.fetchone()
+            if row:
+                tags = self._get_video_tags(row["id"])
+                normalized = tag.strip().lower()
+                if normalized not in [t.lower() for t in tags]:
+                    tags.append(normalized)
+                    self._set_video_tags(row["id"], tags)
+                    self.conn.commit()
 
     def remove_tag_from_video(self, video_id: str, tag: str):
         """Remove a tag from a video."""
-        video = self.get_video(video_id)
-        if video:
-            video.user_tags = [t for t in video.user_tags if t.lower() != tag.lower()]
-            self._set_video_tags(video.id, video.user_tags)
-            self.conn.commit()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM videos WHERE video_id = ?", (video_id,))
+            row = cursor.fetchone()
+            if row:
+                tags = self._get_video_tags(row["id"])
+                tags = [t for t in tags if t.lower() != tag.lower()]
+                self._set_video_tags(row["id"], tags)
+                self.conn.commit()
 
     # =========================================================================
     # Query / Filter Operations

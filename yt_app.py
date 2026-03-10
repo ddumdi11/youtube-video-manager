@@ -623,6 +623,8 @@ class ChatDialog(tk.Toplevel):
                 context = build_video_context(video_dicts)
                 answer = self.analyzer.chat(question, context, self.chat_messages[:-1])
 
+                if not self.winfo_exists():
+                    return
                 if answer:
                     self.after(0, lambda a=answer: self._show_response(a))
                 else:
@@ -669,6 +671,7 @@ class VideoManagerApp(tk.Tk):
         self.thumbnail_cache = ThumbnailCache()
         self.current_videos: List[VideoRecord] = []
         self.card_widgets: List[VideoCard] = []
+        self._shutting_down = False
 
         self._setup_styles()
         self._create_menu()
@@ -1013,12 +1016,16 @@ class VideoManagerApp(tk.Tk):
             success = 0
             errors = 0
             for i, video in enumerate(videos):
+                if self._shutting_down:
+                    return
                 title_short = video.title[:40]
                 self.after(0, lambda i=i, t=title_short: self.status_var.set(
                     f"Transkript {i+1}/{len(videos)}: {t}..."))
 
                 try:
                     result = get_transcript(video.video_id)
+                    if self._shutting_down:
+                        return
                     if result:
                         self.db.update_transcript(video.video_id, result.text, result.language)
                         success += 1
@@ -1030,8 +1037,9 @@ class VideoManagerApp(tk.Tk):
                     self.db.update_analysis_status(video.video_id, "error")
                     errors += 1
 
-            self.after(0, lambda: self._on_batch_complete(
-                f"Transkripte: {success} erfolgreich, {errors} fehlgeschlagen"))
+            if not self._shutting_down:
+                self.after(0, lambda: self._on_batch_complete(
+                    f"Transkripte: {success} erfolgreich, {errors} fehlgeschlagen"))
 
         threading.Thread(target=do_fetch, daemon=True).start()
 
@@ -1062,6 +1070,8 @@ class VideoManagerApp(tk.Tk):
             success = 0
             errors = 0
             for i, video in enumerate(videos):
+                if self._shutting_down:
+                    return
                 title_short = video.title[:40]
                 self.after(0, lambda i=i, t=title_short: self.status_var.set(
                     f"Analyse {i+1}/{len(videos)}: {t}..."))
@@ -1070,6 +1080,8 @@ class VideoManagerApp(tk.Tk):
                     result = analyzer.summarize_transcript(
                         video.transcript_text, title=video.title, channel=video.channel)
 
+                    if self._shutting_down:
+                        return
                     if result:
                         themes_json = json.dumps(result.themes, ensure_ascii=False)
                         self.db.update_summary(video.video_id, result.summary, themes_json)
@@ -1082,8 +1094,9 @@ class VideoManagerApp(tk.Tk):
                     self.db.update_analysis_status(video.video_id, "error")
                     errors += 1
 
-            self.after(0, lambda: self._on_batch_complete(
-                f"Analyse: {success} erfolgreich, {errors} fehlgeschlagen"))
+            if not self._shutting_down:
+                self.after(0, lambda: self._on_batch_complete(
+                    f"Analyse: {success} erfolgreich, {errors} fehlgeschlagen"))
 
         threading.Thread(target=do_analyze, daemon=True).start()
 
@@ -1112,6 +1125,8 @@ class VideoManagerApp(tk.Tk):
             success = 0
             errors = 0
             for i, video in enumerate(videos):
+                if self._shutting_down:
+                    return
                 title_short = video.title[:40]
                 self.after(0, lambda i=i, t=title_short: self.status_var.set(
                     f"Claims {i+1}/{len(videos)}: {t}..."))
@@ -1121,6 +1136,8 @@ class VideoManagerApp(tk.Tk):
                         video.transcript_text, title=video.title,
                         channel=video.channel, source_url=video.url)
 
+                    if self._shutting_down:
+                        return
                     if claims:
                         claims_json = json.dumps(
                             [{"speaker": c.speaker, "topic": c.topic,
@@ -1138,8 +1155,9 @@ class VideoManagerApp(tk.Tk):
                     logger.error(f"Claim-Fehler fuer {video.video_id}: {e}")
                     errors += 1
 
-            self.after(0, lambda: self._on_batch_complete(
-                f"Claims: {success} erfolgreich, {errors} fehlgeschlagen"))
+            if not self._shutting_down:
+                self.after(0, lambda: self._on_batch_complete(
+                    f"Claims: {success} erfolgreich, {errors} fehlgeschlagen"))
 
         threading.Thread(target=do_extract, daemon=True).start()
 
@@ -1166,32 +1184,40 @@ class VideoManagerApp(tk.Tk):
             success = 0
             errors = 0
             for i, video in enumerate(videos):
+                if self._shutting_down:
+                    return
                 vid = video.video_id
                 self.after(0, lambda i=i, v=vid: self.status_var.set(
                     f"Metadaten {i+1}/{len(videos)}: {v}..."))
 
                 try:
                     meta = get_video_metadata(video.video_id)
+                    if self._shutting_down:
+                        return
                     if meta:
-                        video.title = meta.title
-                        video.channel = meta.channel
-                        if meta.published_date:
-                            video.published_date = meta.published_date
-                        if meta.duration_seconds:
-                            video.duration = format_duration(meta.duration_seconds)
-                        if meta.view_count:
-                            video.views = f"{meta.view_count:,} views"
-                            video.views_count = meta.view_count
-                        if meta.thumbnail_url:
-                            video.thumbnail_url = meta.thumbnail_url
-                        self.db.add_video(video)
+                        # Build a merge record with only fetched metadata
+                        merge_record = VideoRecord(
+                            video_id=video.video_id,
+                            title=meta.title,
+                            channel=meta.channel,
+                            published_date=meta.published_date,
+                            duration=format_duration(meta.duration_seconds) if meta.duration_seconds else None,
+                            views=f"{meta.view_count:,} views" if meta.view_count else None,
+                            views_count=meta.view_count,
+                            thumbnail_url=meta.thumbnail_url,
+                            is_live=None,
+                            is_premiere=None,
+                            is_upcoming=None,
+                        )
+                        self.db._merge_video(merge_record)
                         success += 1
                 except Exception as e:
                     logger.error(f"Metadaten-Fehler fuer {video.video_id}: {e}")
                     errors += 1
 
-            self.after(0, lambda: self._on_batch_complete(
-                f"Metadaten: {success} erfolgreich, {errors} fehlgeschlagen"))
+            if not self._shutting_down:
+                self.after(0, lambda: self._on_batch_complete(
+                    f"Metadaten: {success} erfolgreich, {errors} fehlgeschlagen"))
 
         threading.Thread(target=do_update, daemon=True).start()
 
@@ -1260,6 +1286,7 @@ Total Tags: {stats['tags']}
         messagebox.showinfo("Statistics", msg)
 
     def on_closing(self):
+        self._shutting_down = True
         self.db.close()
         self.destroy()
 

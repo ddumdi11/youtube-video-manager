@@ -12,7 +12,7 @@ Provides a graphical user interface for:
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
-from threading import Thread
+from threading import Thread, Event
 import webbrowser
 
 # Import from main module
@@ -39,6 +39,11 @@ class YTExtractorGUI:
         # Configure style
         self.style = ttk.Style()
         self.style.theme_use('clam')
+
+        # Shutdown mechanism
+        self._shutdown_event = Event()
+        self._extraction_thread: Thread | None = None
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Variables
         self.input_files: list[Path] = []
@@ -232,8 +237,16 @@ class YTExtractorGUI:
         files_snapshot = list(self.input_files)
 
         # Run extraction in background thread
-        thread = Thread(target=self._run_extraction, args=(opts, files_snapshot), daemon=True)
-        thread.start()
+        self._shutdown_event.clear()
+        self._extraction_thread = Thread(target=self._run_extraction, args=(opts, files_snapshot), daemon=True)
+        self._extraction_thread.start()
+
+    def _on_close(self):
+        """Handle window close: signal shutdown and wait for extraction thread."""
+        self._shutdown_event.set()
+        if self._extraction_thread and self._extraction_thread.is_alive():
+            self._extraction_thread.join(timeout=3)
+        self.root.destroy()
 
     def _run_extraction(self, opts: dict, files: list[Path]):
         """Run the extraction process."""
@@ -246,6 +259,8 @@ class YTExtractorGUI:
             total_files = len(files)
 
             for i, input_file in enumerate(files):
+                if self._shutdown_event.is_set():
+                    return
                 progress = (i / total_files) * 100
                 self.root.after(0, lambda p=progress: self.progress_var.set(p))
                 self.root.after(0, lambda f=input_file.name: self._update_status(f"Verarbeite: {f}"))
@@ -261,6 +276,8 @@ class YTExtractorGUI:
                         # Download thumbnails if requested
                         if opts["download_thumbs"] and thumb_dir:
                             for video in videos:
+                                if self._shutdown_event.is_set():
+                                    return
                                 if video.thumbnail_url:
                                     local_path = download_thumbnail(
                                         video.video_id, video.thumbnail_url, thumb_dir
@@ -274,6 +291,9 @@ class YTExtractorGUI:
                 except Exception as e:
                     self.root.after(0, lambda err=str(e): self._log(f"  → Fehler: {err}"))
 
+            if self._shutdown_event.is_set():
+                return
+
             # Generate outputs
             if all_videos:
                 self.root.after(0, lambda: self._update_status("Erstelle Ausgabe-Dateien..."))
@@ -282,38 +302,43 @@ class YTExtractorGUI:
                 if opts["generate_html"]:
                     report_path = output_dir / "report.html"
                     generate_html_report(all_videos, report_path, "YouTube Video Report", thumb_dir)
-                    self.root.after(0, lambda: self._log(f"HTML-Report erstellt: {report_path}"))
+                    if not self._shutdown_event.is_set():
+                        self.root.after(0, lambda: self._log(f"HTML-Report erstellt: {report_path}"))
 
-                    if opts["open_html"]:
-                        self.root.after(0, lambda p=report_path: webbrowser.open(p.as_uri()))
+                        if opts["open_html"]:
+                            self.root.after(0, lambda p=report_path: webbrowser.open(p.as_uri()))
 
                 # CSV Export
-                if opts["export_csv"]:
+                if not self._shutdown_event.is_set() and opts["export_csv"]:
                     csv_path = output_dir / "videos.csv"
                     output_csv(all_videos, str(csv_path))
                     self.root.after(0, lambda: self._log(f"CSV exportiert: {csv_path}"))
 
                 # JSON Export
-                if opts["export_json"]:
+                if not self._shutdown_event.is_set() and opts["export_json"]:
                     json_path = output_dir / "videos.json"
                     output_json(all_videos, "multiple files", "mixed", str(json_path), pretty=True)
                     self.root.after(0, lambda: self._log(f"JSON exportiert: {json_path}"))
 
-                self.root.after(0, lambda: self.progress_var.set(100))
-                self.root.after(0, lambda n=len(all_videos):
-                               self._update_status(f"Fertig! {n} Videos aus {total_files} Dateien extrahiert."))
-                self.root.after(0, lambda n=len(all_videos):
-                               self._log(f"\nFertig! Insgesamt {n} Videos extrahiert."))
+                if not self._shutdown_event.is_set():
+                    self.root.after(0, lambda: self.progress_var.set(100))
+                    self.root.after(0, lambda n=len(all_videos):
+                                   self._update_status(f"Fertig! {n} Videos aus {total_files} Dateien extrahiert."))
+                    self.root.after(0, lambda n=len(all_videos):
+                                   self._log(f"\nFertig! Insgesamt {n} Videos extrahiert."))
             else:
-                self.root.after(0, lambda: self._update_status("Keine Videos gefunden."))
-                self.root.after(0, lambda: self._log("Keine Videos in den ausgewählten Dateien gefunden."))
+                if not self._shutdown_event.is_set():
+                    self.root.after(0, lambda: self._update_status("Keine Videos gefunden."))
+                    self.root.after(0, lambda: self._log("Keine Videos in den ausgewählten Dateien gefunden."))
 
         except Exception as e:
-            self.root.after(0, lambda err=str(e): self._log(f"Fehler: {err}"))
-            self.root.after(0, lambda: self._update_status("Fehler bei der Verarbeitung"))
+            if not self._shutdown_event.is_set():
+                self.root.after(0, lambda err=str(e): self._log(f"Fehler: {err}"))
+                self.root.after(0, lambda: self._update_status("Fehler bei der Verarbeitung"))
 
         finally:
-            self.root.after(0, lambda: self.extract_btn.config(state=tk.NORMAL))
+            if not self._shutdown_event.is_set():
+                self.root.after(0, lambda: self.extract_btn.config(state=tk.NORMAL))
 
 
 def main():

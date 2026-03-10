@@ -18,13 +18,27 @@ from yt_extractor import VideoData
 _SAFE_SCHEMES = frozenset({"http", "https", "data"})
 
 
-def _sanitize_url(url: str, fallback: str = "#") -> str:
-    """Sanitize a URL to only allow safe schemes (http, https, data)."""
+def _sanitize_url(url: str, fallback: str = "#", is_image: bool = False) -> str:
+    """Sanitize a URL to only allow safe schemes.
+
+    Args:
+        url: The URL to sanitize
+        fallback: Fallback value if URL is invalid
+        is_image: If True, allow data:image/* URIs (for <img src>).
+                  If False, only allow http/https (for <a href>).
+    """
     if not url:
         return fallback
     try:
         parsed = urlparse(url)
-        if parsed.scheme.lower() not in _SAFE_SCHEMES:
+        scheme = parsed.scheme.lower()
+        if scheme in ("http", "https"):
+            pass  # always allowed
+        elif scheme == "data" and is_image:
+            # Only allow data URIs with image media types
+            if not parsed.path.startswith("image/"):
+                return fallback
+        else:
             return fallback
     except Exception:
         return fallback
@@ -330,7 +344,7 @@ def generate_html_report(
         if video.thumbnail_local:
             thumb_src = html.escape(str(thumb_base / f"{video.video_id}.jpg"), quote=True)
         elif video.thumbnail_url:
-            thumb_src = _sanitize_url(video.thumbnail_url, fallback=fallback_thumb)
+            thumb_src = _sanitize_url(video.thumbnail_url, fallback=fallback_thumb, is_image=True)
         else:
             thumb_src = fallback_thumb
 
