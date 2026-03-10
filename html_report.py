@@ -342,7 +342,7 @@ def generate_html_report(
         video_id_escaped = html.escape(video.video_id, quote=True)
         fallback_thumb = f"https://i.ytimg.com/vi/{video_id_escaped}/mqdefault.jpg"
         if video.thumbnail_local:
-            thumb_src = html.escape(str(thumb_base / f"{video.video_id}.jpg"), quote=True)
+            thumb_src = html.escape(str(thumb_base / Path(video.thumbnail_local).name), quote=True)
         elif video.thumbnail_url:
             thumb_src = _sanitize_url(video.thumbnail_url, fallback=fallback_thumb, is_image=True)
         else:

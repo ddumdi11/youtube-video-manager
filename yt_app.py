@@ -211,6 +211,9 @@ class VideoCard(ttk.Frame):
                     resized = image.resize((self.THUMB_WIDTH, self.THUMB_HEIGHT), Image.Resampling.LANCZOS)
                     if self.winfo_exists():
                         self.after(0, lambda img=resized: self._set_thumbnail_from_pil(img))
+                else:
+                    if self.winfo_exists():
+                        self.after(0, self._set_placeholder)
             except Exception as e:
                 logger.debug(f"Failed to load thumbnail for {self.video.video_id}: {e}")
                 if self.winfo_exists():
@@ -453,6 +456,10 @@ class VideoEditDialog(tk.Toplevel):
         self.meta_labels["last_updated"].configure(text=v.last_updated or "N/A")
 
     def _open_url(self, event=None):
+        parsed = urllib.parse.urlparse(self.video.url)
+        if parsed.scheme.lower() not in ("http", "https"):
+            logger.warning(f"Blocked opening URL with unsafe scheme: {self.video.url}")
+            return
         webbrowser.open(self.video.url)
 
     def _save(self):
@@ -599,11 +606,19 @@ class ChatDialog(tk.Toplevel):
 
                 from llm_analyzer import build_video_context
 
+                if not self.winfo_exists():
+                    return
+
                 # Build context from analyzed videos
-                analyzed = self.db.get_analyzed_videos()
-                if not analyzed:
-                    # Fall back to videos with transcripts
-                    analyzed = self.db.get_videos_by_status("transcript")
+                try:
+                    analyzed = self.db.get_analyzed_videos()
+                    if not analyzed:
+                        analyzed = self.db.get_videos_by_status("transcript")
+                except Exception:
+                    return  # DB closed during shutdown
+
+                if not self.winfo_exists():
+                    return
 
                 if not analyzed:
                     self.after(0, lambda: self._show_response(
@@ -632,10 +647,12 @@ class ChatDialog(tk.Toplevel):
 
             except ValueError as e:
                 e_msg = str(e)
-                self.after(0, lambda m=e_msg: self._show_response(f"API-Fehler: {m}"))
+                if self.winfo_exists():
+                    self.after(0, lambda m=e_msg: self._show_response(f"API-Fehler: {m}"))
             except Exception as e:
                 e_msg = str(e)
-                self.after(0, lambda m=e_msg: self._show_response(f"Fehler: {m}"))
+                if self.winfo_exists():
+                    self.after(0, lambda m=e_msg: self._show_response(f"Fehler: {m}"))
 
         threading.Thread(target=do_chat, daemon=True).start()
 
@@ -747,7 +764,7 @@ class VideoManagerApp(tk.Tk):
         file_menu.add_separator()
         file_menu.add_command(label="Export CSV...", command=self._export_csv)
         file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.quit)
+        file_menu.add_command(label="Exit", command=self.on_closing)
 
         # Analyze menu
         analyze_menu = tk.Menu(menubar, tearoff=0)

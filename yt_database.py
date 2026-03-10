@@ -631,11 +631,13 @@ class VideoDatabase:
 
             order_dir = "DESC" if descending else "ASC"
             query = f"SELECT * FROM videos ORDER BY {order_by} {order_dir}"
+            params: list = []
 
-            if limit:
-                query += f" LIMIT {limit}"
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(int(limit))
 
-            cursor.execute(query)
+            cursor.execute(query, params)
             return [self._row_to_record(row) for row in cursor.fetchall()]
 
     def search_videos(self,
