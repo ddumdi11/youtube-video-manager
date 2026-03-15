@@ -4,7 +4,7 @@ Integration with yt-shared-data: sync video/channel data to the shared database.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional, Sequence
 
 try:
     from yt_shared import SharedDatabase, Channel, Video, DataGap
@@ -22,7 +22,7 @@ def is_available() -> bool:
     return SHARED_AVAILABLE
 
 
-def sync_videos(videos: list) -> int:
+def sync_videos(videos: Sequence[Any]) -> int:
     """Sync VideoRecord objects to the shared database.
 
     Args:
@@ -102,7 +102,7 @@ def acquire_lock_with_warning() -> bool:
     """Acquire the shared DB lock and log if another project holds it.
 
     Returns:
-        True if lock was acquired.
+        True if lock was acquired, False if another project holds it.
     """
     if not SHARED_AVAILABLE:
         return False
@@ -114,6 +114,7 @@ def acquire_lock_with_warning() -> bool:
             f"Shared DB wird gerade von '{existing.project_name}' genutzt "
             f"(PID {existing.pid}, seit {existing.started_at})"
         )
+        return False
     return True
 
 

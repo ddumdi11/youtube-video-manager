@@ -253,8 +253,11 @@ class VideoDatabase:
         try:
             cursor.execute("ALTER TABLE videos ADD COLUMN youtube_channel_id TEXT")
             logger.debug("Added column: youtube_channel_id")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
+        except sqlite3.OperationalError as e:
+            if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                pass  # Column already exists
+            else:
+                raise
 
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_videos_youtube_channel_id "
@@ -982,14 +985,18 @@ class VideoDatabase:
         # Sync to shared database if available
         try:
             from shared_sync import sync_videos, is_available
-            if is_available():
-                all_records = [self.get_video(v.video_id) for v in videos
-                               if hasattr(v, 'video_id')]
-                all_records = [r for r in all_records if r is not None]
-                synced = sync_videos(all_records)
-                logger.info(f"Synced {synced} videos to shared DB")
-        except Exception as e:
-            logger.debug(f"Shared DB sync skipped: {e}")
+        except ImportError:
+            logger.debug("Shared DB sync skipped: shared_sync not installed")
+        else:
+            try:
+                if is_available():
+                    all_records = [self.get_video(v.video_id) for v in videos
+                                   if hasattr(v, 'video_id')]
+                    all_records = [r for r in all_records if r is not None]
+                    synced = sync_videos(all_records)
+                    logger.info(f"Synced {synced} videos to shared DB")
+            except Exception:
+                logger.exception("Shared DB sync failed")
 
         return count
 
