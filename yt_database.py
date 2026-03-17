@@ -246,7 +246,7 @@ class VideoDatabase:
 
         logger.info("Schema migration to v2 complete")
 
-    def _migrate_to_v3(self, cursor):
+    def _migrate_to_v3(self, cursor: sqlite3.Cursor) -> None:
         """Migrate schema from v2 to v3: add youtube_channel_id for shared data layer."""
         logger.info("Migrating database schema to v3...")
 
@@ -254,9 +254,11 @@ class VideoDatabase:
             cursor.execute("ALTER TABLE videos ADD COLUMN youtube_channel_id TEXT")
             logger.debug("Added column: youtube_channel_id")
         except sqlite3.OperationalError as e:
-            if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
-                pass  # Column already exists
+            msg = str(e).lower()
+            if "duplicate column" in msg or "already exists" in msg:
+                logger.debug("Column already exists: youtube_channel_id")
             else:
+                logger.exception("Schema migration to v3 failed")
                 raise
 
         cursor.execute(

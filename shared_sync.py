@@ -59,7 +59,7 @@ def sync_videos(videos: Sequence[Any]) -> int:
     return count
 
 
-def get_channel_details(channel_name: str) -> Optional[dict]:
+def get_channel_details(channel_name: str) -> Optional[dict[str, Any]]:
     """Look up enriched channel details from the shared DB.
 
     The video-manager stores channel names, not IDs. This searches
@@ -118,7 +118,7 @@ def acquire_lock_with_warning() -> bool:
     return True
 
 
-def release_lock():
+def release_lock() -> None:
     """Release our lock on the shared DB."""
     if not SHARED_AVAILABLE:
         return
@@ -126,7 +126,7 @@ def release_lock():
     db.release_lock()
 
 
-def detect_gaps() -> list:
+def detect_gaps() -> list[Any]:
     """Detect data gaps that other tools could fill.
 
     Returns:
@@ -140,7 +140,7 @@ def detect_gaps() -> list:
         return db.detect_gaps(conn)
 
 
-def get_stats() -> Optional[dict]:
+def get_stats() -> Optional[dict[str, Any]]:
     """Get shared DB statistics.
 
     Returns:
