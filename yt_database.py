@@ -26,6 +26,7 @@ class VideoRecord:
     video_id: str
     title: str
     channel: Optional[str] = None
+    youtube_channel_id: Optional[str] = None  # YouTube channel ID (UC...)
     views: Optional[str] = None
     views_count: Optional[int] = None
     published: Optional[str] = None
@@ -78,7 +79,7 @@ class VideoRecord:
 class VideoDatabase:
     """SQLite database for video metadata storage."""
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     # Allowed columns for ORDER BY (prevents SQL injection)
     ALLOWED_ORDER_COLUMNS = frozenset({
@@ -202,6 +203,9 @@ class VideoDatabase:
         if current_version < 2:
             self._migrate_to_v2(cursor)
 
+        if current_version < 3:
+            self._migrate_to_v3(cursor)
+
         # Create indexes (after migration so new columns exist)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_videos_published_date ON videos(published_date)")
@@ -241,6 +245,28 @@ class VideoDatabase:
                 pass
 
         logger.info("Schema migration to v2 complete")
+
+    def _migrate_to_v3(self, cursor: sqlite3.Cursor) -> None:
+        """Migrate schema from v2 to v3: add youtube_channel_id for shared data layer."""
+        logger.info("Migrating database schema to v3...")
+
+        try:
+            cursor.execute("ALTER TABLE videos ADD COLUMN youtube_channel_id TEXT")
+            logger.debug("Added column: youtube_channel_id")
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if "duplicate column" in msg or "already exists" in msg:
+                logger.debug("Column already exists: youtube_channel_id")
+            else:
+                logger.exception("Schema migration to v3 failed")
+                raise
+
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_videos_youtube_channel_id "
+            "ON videos(youtube_channel_id)"
+        )
+
+        logger.info("Schema migration to v3 complete")
 
     def close(self):
         """Close database connection."""
@@ -295,16 +321,18 @@ class VideoDatabase:
 
             cursor.execute("""
                 INSERT INTO videos (
-                    video_id, title, channel, views, views_count,
+                    video_id, title, channel, youtube_channel_id,
+                    views, views_count,
                     published, published_date, duration, url, video_type,
                     thumbnail_url, thumbnail_local, is_live, is_premiere,
                     is_upcoming, live_badge, user_comment, user_rating,
                     transcript_text, transcript_language, summary, themes,
                     claims, analysis_status, import_group,
                     source_file, source_date, first_seen, last_updated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                video.video_id, video.title, video.channel, video.views,
+                video.video_id, video.title, video.channel,
+                video.youtube_channel_id, video.views,
                 video.views_count, video.published, video.published_date,
                 video.duration, video.url, video.video_type, video.thumbnail_url,
                 video.thumbnail_local, int(video.is_live or False), int(video.is_premiere or False),
@@ -331,7 +359,8 @@ class VideoDatabase:
 
         cursor.execute("""
             UPDATE videos SET
-                title = ?, channel = ?, views = ?, views_count = ?,
+                title = ?, channel = ?, youtube_channel_id = ?,
+                views = ?, views_count = ?,
                 published = ?, published_date = ?, duration = ?, url = ?,
                 video_type = ?, thumbnail_url = ?, thumbnail_local = ?,
                 is_live = ?, is_premiere = ?, is_upcoming = ?, live_badge = ?,
@@ -341,7 +370,8 @@ class VideoDatabase:
                 source_file = ?, source_date = ?, last_updated = ?
             WHERE id = ?
         """, (
-            video.title, video.channel, video.views, video.views_count,
+            video.title, video.channel, video.youtube_channel_id,
+            video.views, video.views_count,
             video.published, video.published_date, video.duration, video.url,
             video.video_type, video.thumbnail_url, video.thumbnail_local,
             int(video.is_live or False), int(video.is_premiere or False), int(video.is_upcoming or False),
@@ -390,6 +420,7 @@ class VideoDatabase:
                 return None if val == "" else val
 
             channel = _none_if_empty(video.channel)
+            youtube_channel_id = _none_if_empty(video.youtube_channel_id)
             views = _none_if_empty(video.views)
             published = _none_if_empty(video.published)
             published_date = _none_if_empty(video.published_date)
@@ -407,6 +438,7 @@ class VideoDatabase:
                 UPDATE videos SET
                     title = COALESCE(?, title),
                     channel = COALESCE(?, channel),
+                    youtube_channel_id = COALESCE(?, youtube_channel_id),
                     views = COALESCE(?, views),
                     views_count = COALESCE(?, views_count),
                     published = COALESCE(?, published),
@@ -426,7 +458,7 @@ class VideoDatabase:
                     last_updated = ?
                 WHERE video_id = ?
             """, (
-                title, channel, views, video.views_count,
+                title, channel, youtube_channel_id, views, video.views_count,
                 published, published_date, duration, url,
                 video_type, thumbnail_url, thumbnail_local,
                 int(video.is_live) if video.is_live is not None else None,
@@ -498,6 +530,7 @@ class VideoDatabase:
             video_id=row["video_id"],
             title=row["title"],
             channel=row["channel"],
+            youtube_channel_id=row["youtube_channel_id"],
             views=row["views"],
             views_count=row["views_count"],
             published=row["published"],
@@ -950,6 +983,23 @@ class VideoDatabase:
                 self.conn.commit()
 
         logger.info(f"Imported {count} videos from {source_file}")
+
+        # Sync to shared database if available
+        try:
+            from shared_sync import sync_videos, is_available
+        except ImportError:
+            logger.debug("Shared DB sync skipped: shared_sync not installed")
+        else:
+            try:
+                if is_available():
+                    all_records = [self.get_video(v.video_id) for v in videos
+                                   if hasattr(v, 'video_id')]
+                    all_records = [r for r in all_records if r is not None]
+                    synced = sync_videos(all_records)
+                    logger.info(f"Synced {synced} videos to shared DB")
+            except Exception:
+                logger.exception("Shared DB sync failed")
+
         return count
 
     def import_from_onetab(self, parsed_videos, source_name: str = "onetab") -> int:
